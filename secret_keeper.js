@@ -68,8 +68,8 @@ function doPost(e) {
 function handleTextMessage(userId, replyToken, text, webAppUrl) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
-  const ownerEmail = Session.getActiveUser().getEmail(); // Assume admin/owner is the deployer
-
+  // We don't use Session.getActiveUser().getEmail() here because this is triggered by external LINE Webhook
+  
   if (text.toLowerCase().trim() === 'register') {
     // Check if user already has an ACTIVE vault (optional: allow multiple)
     const existingVault = data.find(row => row[2] === userId && row[9] === 'ACTIVE');
@@ -169,10 +169,112 @@ function submitVault(data) {
   return { ok: true, docUrl: docUrl };
 }
 
-/* ---------- Scheduler: daily check (WITH LOGGER) ---------- */
+/* ---------- LINE Message Builders ---------- */
+// **อัปเดต: รับ sheetUrl จาก scheduledCheck โดยตรง**
+function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
+  return {
+    type: "flex",
+    altText: "Secret Keeper: Reminder Check-in",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "🚨 แจ้งเตือนเช็กอิน 🚨",
+            weight: "bold",
+            size: "md"
+          },
+          {
+            type: "text",
+            text: `ระบบตรวจไม่พบการเช็กอินของคุณมานาน ${checkinDays} วัน`,
+            wrap: true,
+            margin: "md"
+          },
+          {
+            type: "text",
+            text: `กรุณากด "ยังอยู่" ภายใน ${graceHours} ชั่วโมง มิฉะนั้นระบบจะเปิดเผยความลับ`,
+            wrap: true,
+            color: "#e84e4e",
+            size: "sm",
+            margin: "sm"
+          }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          {
+            type: "button",
+            style: "primary",
+            color: "#30A900", // Green for positive action
+            action: {
+              type: "postback",
+              label: "✅ ฉันยังอยู่ (Check In)",
+              data: "action=checkin", // This data is handled by handlePostback
+              displayText: "ฉันยังอยู่ (Check In)"
+            }
+          },
+          {
+            type: "button",
+            style: "secondary",
+            action: {
+              type: "uri",
+              label: "เปิด Vault Index (ถ้าต้องการแก้ไข)",
+              uri: sheetUrl // ใช้ URL ที่รับมา
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
+/* ---------- LINE push util (UPDATED for Flex Message) ---------- */
+function sendLinePush(toLineUserId, payloadContent) {
+  const token = getScriptProps().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+  if (!token) {
+    Logger.log('LINE token missing');
+    return;
+  }
+  
+  let payload;
+  if (typeof payloadContent === 'string') {
+    // Standard text message
+    payload = {
+      to: toLineUserId,
+      messages: [{ type: 'text', text: payloadContent }]
+    };
+  } else {
+    // Assume it's a Flex Message object (or other message object)
+    payload = {
+      to: toLineUserId,
+      messages: [payloadContent]
+    };
+  }
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+  const response = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', options);
+  Logger.log('LINE Push Response: ' + response.getResponseCode() + ' Body: ' + response.getContentText());
+}
+
+/* ---------- Scheduler: daily check (WITH LOGGER AND FLEX MESSAGE) ---------- */
 function scheduledCheck() {
   // This should be set as a time-driven trigger (daily)
   const sh = getSheet();
+  // **FIX: ดึง URL ของ Spreadsheet ที่ผูกอยู่กับ Sheet Object โดยตรง**
+  const ssUrl = sh.getParent().getUrl(); 
+  
   const data = sh.getDataRange().getValues();
   const now = new Date();
   Logger.log('--- STARTING scheduledCheck ---');
@@ -251,12 +353,14 @@ function scheduledCheck() {
         if (millisSinceLastReminder > reminderInterval) {
           Logger.log(`Sending Reminder. Time since last reminder: ${millisSinceLastReminder}ms.`);
           
-          // send final warning to owner via LINE (first reminder)
+          // Use FLEX MESSAGE for LINE reminder
           if (ownerLineId) {
-            sendLinePush(ownerLineId, `ระบบตรวจไม่พบการเช็กอินของคุณมานาน ${checkinDays} วัน กรุณากด "ยังอยู่" ภายใน ${graceHours} ชั่วโมง เพื่อไม่ให้ระบบส่งข้อมูลถึงคนที่คุณไว้ใจ`);
-            Logger.log('LINE Push Reminder sent.');
+            // **FIX: ส่ง ssUrl ที่ดึงมาอย่างถูกต้องแล้ว**
+            const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
+            sendLinePush(ownerLineId, flexMsg); // send Flex Message object
+            Logger.log('LINE Flex Reminder sent.');
           } else if (ownerEmail) {
-            // fallback: send email to owner
+            // fallback: send email to owner (if LINE ID is missing)
             GmailApp.sendEmail(ownerEmail, 'Secret Keeper - Final Check-in Reminder',
               `ระบบตรวจไม่พบการเช็กอินเป็นเวลา ${checkinDays} วัน\nกรุณาเข้าสู่ระบบและยืนยันภายใน ${graceHours} ชั่วโมง`);
             Logger.log('Email Reminder sent (LINE ID missing).');
@@ -278,28 +382,6 @@ function scheduledCheck() {
   Logger.log('--- ENDING scheduledCheck ---');
 }
 
-/* ---------- LINE push util ---------- */
-function sendLinePush(toLineUserId, text) {
-  const token = getScriptProps().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
-  if (!token) {
-    Logger.log('LINE token missing');
-    return;
-  }
-  const payload = {
-    to: toLineUserId,
-    messages: [{ type: 'text', text: text }]
-  };
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + token },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-  const response = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', options);
-  Logger.log('LINE Push Response: ' + response.getResponseCode() + ' Body: ' + response.getContentText());
-}
-
 /* ---------- Admin utility: list vaults (for debugging) ---------- */
 function listVaults() {
   const sh = getSheet();
@@ -318,3 +400,4 @@ function listVaults() {
 function checkinByOwner(ownerLineId) {
   checkin(ownerLineId);
 }
+/* ---------- End of Secret Keeper ---------- */
