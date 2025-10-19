@@ -1,0 +1,9 @@
+{
+  "name": "secret-keeper-proxy",
+  "version": "1.0.0",
+  "description": "Proxy for LINE Webhook to Google Apps Script",
+  "main": "index.js",
+  "dependencies": {
+    "node-fetch": "2.6.7"
+  }
+}
