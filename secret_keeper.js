@@ -130,14 +130,16 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
   if (input === 'register' || input === 'create') {
     // 1.1 ถ้ามี Vault ACTIVE อยู่แล้ว: แนะนำคำสั่ง create
     if (activeVaults.length > 0 && input === 'register') {
-      replyLine(replyToken, 'คุณมี Vault ที่เปิดใช้งานอยู่แล้ว ต้องการสร้างอีกหรือไม่? พิมพ์ **"create"** เพื่อสร้างใหม่ หรือ **"list"** เพื่อดู Vault ที่มีอยู่');
+      const alreadyFlex = createAlreadyRegisteredFlex(activeVaults.length, webAppUrl);
+      replyFlex(replyToken, alreadyFlex);
       return;
     }
 
     // 1.2 ถ้าพิมพ์ register (และยังไม่มี ACTIVE) หรือพิมพ์ create: ส่ง Flex Message ให้ลงทะเบียน
     const onboardUrl = `${webAppUrl}?ownerLineId=${userId}`;
     const registerFlex = createRegisterFlex(onboardUrl);
-    sendLinePush(userId, registerFlex);
+    // Use reply if triggered by user message, or push as before if preferred
+    replyFlex(replyToken, registerFlex);
     
   } else if (input === 'checkin') {
     // 2. คำสั่ง checkin (LINE: Checkin ALL active vaults)
@@ -147,13 +149,12 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
   } else if (input === 'list') {
     // 3. คำสั่ง list (ใหม่)
     if (activeVaults.length === 0) {
-      replyLine(replyToken, 'คุณไม่มี Vault ที่เปิดใช้งานอยู่ พิมพ์ **"register"** เพื่อเริ่มสร้าง');
+      const defaultFlex = createDefaultFlex(webAppUrl);
+      replyFlex(replyToken, defaultFlex);
       return;
     }
-    const listMsg = activeVaults.map((row, index) => 
-      `${index + 1}. ${row[0]} (Doc: ${row[4].substring(0, 30)}...)`).join('\n');
-      
-    replyLine(replyToken, `Vault ที่เปิดใช้งานอยู่ (${activeVaults.length} รายการ):\n${listMsg}\n\nหากต้องการยกเลิก พิมพ์ **"deactivate"**`);
+    const listFlex = createListFlex(activeVaults);
+    replyFlex(replyToken, listFlex);
 
   } else if (input === 'deactivate') {
     // 4. คำสั่ง deactivate (ใหม่)
@@ -163,11 +164,12 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
     }
     // ใช้ Flex Message เพื่อให้เลือก Vault ที่ต้องการยกเลิก
     const flexMsg = createDeactivationFlex(activeVaults);
-    sendLinePush(userId, flexMsg);
+  replyFlex(replyToken, flexMsg);
 
   } else {
-    // 5. ข้อความอื่น ๆ
-    replyLine(replyToken, 'ยินดีต้อนรับสู่ Secret Keeper!\nพิมพ์ **"register"** เพื่อสร้าง Vault\nพิมพ์ **"checkin"** เพื่อต่ออายุ Vault\nพิมพ์ **"list"** เพื่อดู Vault ที่เปิดใช้งานอยู่');
+    // 5. ข้อความอื่น ๆ -> Show default Flex with quick actions
+    const defaultFlex = createDefaultFlex(webAppUrl);
+    replyFlex(replyToken, defaultFlex);
   }
 }
 
@@ -175,6 +177,19 @@ function handlePostback(userId, replyToken, data) {
   if (data === 'action=checkin') {
     checkinByLineId(userId); // LINE: Checkin ALL active vaults
     replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
+    return;
+  } else if (data === 'action=list') {
+    // Return the active vaults list as a Flex message when user taps the 'List' postback button
+    const sh = getSheet();
+    const allData = sh.getDataRange().getValues();
+    const activeVaults = allData.filter(row => row[2] === userId && row[10] === 'ACTIVE');
+    if (activeVaults.length === 0) {
+      const webAppUrl = getScriptProps().getProperty('BASE_WEBAPP_URL');
+      replyFlex(replyToken, createDefaultFlex(webAppUrl));
+    } else {
+      replyFlex(replyToken, createListFlex(activeVaults));
+    }
+    return;
   } else if (data.startsWith('action=deactivate&vaultId=')) {
     const vaultId = data.split('=')[2];
     deactivateVault(vaultId, userId);
@@ -208,6 +223,30 @@ function replyLine(replyToken, text) {
   const payload = {
     replyToken: replyToken,
     messages: [{ type: 'text', text: text }]
+  };
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', options);
+}
+
+/**
+ * Reply with a Flex (or other structured) message using replyToken.
+ * messageObject should be a valid LINE message object (e.g. { type: 'flex', altText: '...', contents: {...} })
+ */
+function replyFlex(replyToken, messageObject) {
+  const token = getScriptProps().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+  if (!token) {
+    Logger.log('LINE token missing for reply (flex)');
+    return;
+  }
+  const payload = {
+    replyToken: replyToken,
+    messages: [messageObject]
   };
   const options = {
     method: 'post',
@@ -347,19 +386,35 @@ function createRegisterFlex(url) {
     altText: "Secret Keeper: สร้าง Vault ใหม่",
     contents: {
       type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "🔒 Secret Keeper",
+            weight: "bold",
+            size: "lg",
+            color: "#FFFFFF",
+            align: "center"
+          }
+        ],
+        backgroundColor: "#1e293b",
+        paddingAll: "12px"
+      },
       body: {
         type: "box",
         layout: "vertical",
         contents: [
           {
             type: "text",
-            text: "🔒 สร้าง Vault (Secret Keeper)",
+            text: "สร้าง Vault ใหม่",
             weight: "bold",
             size: "md"
           },
           {
             type: "text",
-            text: "กรุณากดปุ่มด้านล่างเพื่อไปยังหน้าเว็บแอป (Google Apps Script) เพื่อกรอกรายละเอียด Vault และ Trusted Contacts",
+            text: "กดปุ่มด้านล่างเพื่อไปยังหน้าเว็บแอปและกรอกรายละเอียด Vault รวมถึง Trusted Contacts",
             wrap: true,
             margin: "md",
             color: "#4a5568",
@@ -372,26 +427,141 @@ function createRegisterFlex(url) {
           {
             type: "button",
             style: "primary",
-            color: "#00B900", // LINE Green
+            color: "#00B900",
             margin: "md",
             action: {
               type: "uri",
-              label: "✨ สร้าง Vault ใหม่ (คลิก)",
+              label: "✨ สร้าง Vault ใหม่",
               uri: url
             }
           },
           {
             type: "text",
-            text: "หมายเหตุ: หากคุณไม่ได้ใช้ LINE OA ผ่านบัญชีหลัก Google App Script อาจต้องขอสิทธิ์เข้าถึงบัญชี Google",
+            text: "หมายเหตุ: อาจต้องให้สิทธิ์ Google เมื่อเปิดหน้าเว็บครั้งแรก",
             wrap: true,
             size: "xxs",
             color: "#a0aec0",
             margin: "md"
           }
-        ]
+        ],
+        spacing: "md",
+        paddingAll: "12px"
       }
     }
   }
+}
+
+/**
+ * Flex shown when user already has active vault(s) and tries to register
+ */
+function createAlreadyRegisteredFlex(activeCount, webAppUrl) {
+  return {
+    type: 'flex',
+    altText: 'คุณมี Vault อยู่แล้ว',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'text', text: '📌 Vault ที่มีอยู่', weight: 'bold', color: '#FFFFFF', align: 'center' }],
+        backgroundColor: '#0b74de',
+        paddingAll: '12px'
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: `คุณมี Vault ที่เปิดใช้งานอยู่ ${activeCount} รายการ`, weight: 'bold', size: 'md' },
+          { type: 'text', text: 'คุณสามารถสร้าง Vault ใหม่หรือดูรายการ Vault ปัจจุบันได้โดยกดปุ่มด้านล่าง', wrap: true, margin: 'md', color: '#4a5568', size: 'sm' }
+        ],
+        spacing: 'md',
+        paddingAll: '12px'
+      },
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'uri', label: 'สร้างใหม่', uri: webAppUrl } },
+          { type: 'button', style: 'secondary', action: { type: 'postback', label: 'รายการ Vault', data: 'action=list', displayText: 'list' } }
+        ],
+        paddingAll: '12px'
+      }
+    }
+  };
+}
+
+/**
+ * Flex to list active vaults with a Deactivate action per item
+ */
+function createListFlex(activeVaults) {
+  const items = activeVaults.slice(0, 12).map((row, idx) => {
+    const vaultId = row[0];
+    const docUrl = row[4] || '';
+    const title = `Vault ${idx + 1}`;
+    return {
+      type: 'box',
+      layout: 'horizontal',
+      contents: [
+        { type: 'text', text: title, weight: 'bold', size: 'sm', flex: 2 },
+        { type: 'text', text: vaultId, size: 'sm', flex: 3, color: '#4a5568' },
+        {
+          type: 'button',
+          style: 'secondary',
+          action: { type: 'postback', label: 'ยกเลิก', data: `action=deactivate&vaultId=${vaultId}`, displayText: `ยกเลิก ${vaultId}` },
+          flex: 2
+        }
+      ],
+      spacing: 'sm',
+      margin: 'sm'
+    };
+  });
+
+  return {
+    type: 'flex',
+    altText: 'รายการ Vault ของคุณ',
+    contents: {
+      type: 'bubble',
+      header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '📚 รายการ Vault', size: 'xl', weight: 'bold', color: '#FFFFFF' }], backgroundColor: '#1f2937', paddingAll: '12px' },
+      body: { type: 'box', layout: 'vertical', contents: items, spacing: 'md', paddingAll: '12px' }
+    }
+  };
+}
+
+/**
+ * Default Flex shown for unknown messages, with quick actions: register, checkin, list
+ */
+function createDefaultFlex(webAppUrl) {
+  return {
+    type: 'flex',
+    altText: 'Secret Keeper - เมนูหลัก',
+    contents: {
+      type: 'bubble',
+      header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '🔏 Secret Keeper', size: 'xl', weight: 'bold', color: '#FFFFFF', align: 'center' }], backgroundColor: '#0f172a', paddingAll: '12px' },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: 'ยินดีต้อนรับสู่ Secret Keeper', weight: 'bold', size: 'lg' },
+          { type: 'text', text: 'เลือกเมนูที่ต้องการ:', wrap: true, margin: 'md', color: '#4a5568', size: 'sm' },
+          { type: 'separator', margin: 'md' }
+        ],
+        spacing: 'md',
+        paddingAll: '12px'
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'uri', label: 'Register', uri: webAppUrl } },
+          { type: 'button', style: 'secondary', action: { type: 'postback', label: 'Check-in', data: 'action=checkin', displayText: 'ฉันยังอยู่ (Check In)' } },
+          { type: 'button', style: 'secondary', action: { type: 'postback', label: 'List', data: 'action=list', displayText: 'ขอดูรายการ Vault' } }
+        ],
+        paddingAll: '12px'
+      }
+    }
+  };
 }
 
 function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
