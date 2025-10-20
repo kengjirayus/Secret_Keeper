@@ -5,7 +5,7 @@
  * - Scheduled daily check: scheduledCheck -> activate vaults if overdue
  *
  * IMPORTANT:
- * - Set Script Properties: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET (optional), ADMIN_EMAIL, BASE_WEBAPP_URL, **LINE_user_ID**
+ * - Set Script Properties: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET (optional), ADMIN_EMAIL, BASE_WEBAPP_URL, LINE_user_ID, **EMAIL_SENDER_NAME**
  * - Deploy web app and set LINE webhook to the web app URL
  */
 
@@ -553,9 +553,13 @@ function sendLinePush(toLineUserId, payloadContent) {
 /* ---------- Scheduler: daily check ---------- */
 function scheduledCheck() {
   const sh = getSheet();
+  const props = getScriptProps();
   const data = sh.getDataRange().getValues();
   const now = new Date();
-  const webAppUrl = getScriptProps().getProperty('BASE_WEBAPP_URL');
+  const webAppUrl = props.getProperty('BASE_WEBAPP_URL');
+  
+  // *** NEW: Get Sender Name from Script Properties ***
+  const SENDER_NAME = props.getProperty('EMAIL_SENDER_NAME') || 'Secret Keeper Default Sender'; 
 
   // Index mapping
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
@@ -635,10 +639,12 @@ function scheduledCheck() {
           body += `ถ้าต้องการความช่วยเหลือ ติดต่อผู้ดูแลระบบ.`;
 
           const subject = `Secret Keeper - Vault from ${ownerEmail || 'A'} is activated`;
+          
+          // *** UPDATED: Use SENDER_NAME from properties ***
           trustees.forEach(t => {
             try { 
-              GmailApp.sendEmail(t, subject, body); 
-              Logger.log(`Email sent to Trustee: ${t}`);
+              GmailApp.sendEmail(t, subject, body, { name: SENDER_NAME });
+              Logger.log(`Email sent to Trustee: ${t} with sender name: ${SENDER_NAME}`);
             } catch(e){ 
               Logger.log('send mail err to ' + t + ': ' + e); 
             }
@@ -673,8 +679,10 @@ function scheduledCheck() {
             emailBody += `🔗 ลิงก์ยืนยันตัวตน (Proof-of-Life) ฉุกเฉิน:\n${checkinUrl}\n\n`;
             emailBody += `(ลิงก์นี้ใช้ได้แม้ว่า LINE OA จะมีปัญหา หรือคุณไม่สะดวกเข้า LINE)\n\n---`;
 
-            GmailApp.sendEmail(ownerEmail, `🚨 SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`, emailBody);
-            Logger.log(`Email Check-in Fallback sent for ${vaultId}`);
+            const subject = `🚨 SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`;
+            // *** UPDATED: Use SENDER_NAME from properties ***
+            GmailApp.sendEmail(ownerEmail, subject, emailBody, { name: SENDER_NAME });
+            Logger.log(`Email Check-in Fallback sent for ${vaultId} with sender name: ${SENDER_NAME}`);
           }
 
           sh.getRange(r+1, 13).setValue(new Date().toISOString()); // set lastReminderISO (Col 13)
@@ -706,4 +714,3 @@ function listVaults() {
 function checkinByOwner(ownerLineId) {
   checkinByLineId(ownerLineId);
 }
-/* ---------- End of Code ---------- */
