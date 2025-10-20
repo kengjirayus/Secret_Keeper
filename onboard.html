@@ -13,37 +13,37 @@
     </style>
   </head>
   <body>
-    <h3>สร้าง Vault (Secret Keeper)</h3>
+    <h3>สร้างเอกสาร​​"สั่งเสีย" (Secret Keeper)</h3>
     <div class="hint" style="margin-top: 0; color: #cc0000; font-weight: bold;">
       ⚠️ ข้อสำคัญ: กรุณาอนุญาตสิทธิ์ Google Account ให้ถูกต้องเพื่อให้ระบบสามารถเข้าถึงไฟล์ได้
     </div>
 
     <div>
-      <label for="vaultTitle">ชื่อ Vault</label>
-      <input id="vaultTitle" placeholder="เช่น พินัยกรรมฉบับที่ 2" />
+      <label for="vaultTitle">ชื่อเอกสาร​​"สั่งเสีย"</label>
+      <input id="vaultTitle" placeholder="เช่น พินัยกรรมฉบับที่ 2 — ตรงนี้จะถูกใช้เป็นชื่อไฟล์เอกสาร Google Doc" />
 
       <label for="secretContent">เนื้อหา (ข้อความหลัก)</label>
-      <textarea id="secretContent" rows="8" placeholder="พิมพ์ข้อความที่ต้องการเก็บ เช่น คำสั่ง, รหัสผ่านสำคัญ, คำบอกลา"></textarea>
+      <textarea id="secretContent" rows="8" placeholder="พิมพ์ข้อความที่ต้องการเก็บ เช่น คำสั่ง, รหัสผ่านสำคัญ, คำบอกลา — หลังจากสร้างแล้วสามารถไปแก้ไขได้ที่ Google Doc ตามชื่อไฟล์ที่ตั้งไว้"></textarea>
       <div class="hint">ข้อความนี้จะถูกบันทึกใน Google Doc ใหม่</div>
 
       <label for="filesFolderUrlOrId">ลิงก์/ID ไฟล์แนบ (PDF, VDO, รูปถ่าย)</label>
       <input id="filesFolderUrlOrId" placeholder="วาง Google Drive URL หรือ ID ของไฟล์/โฟลเดอร์" />
-      <div class="hint">ระบบจะแชร์ไฟล์/โฟลเดอร์นี้ให้ Trustees เมื่อถึงเวลาเปิดเผยความลับ (ไม่บังคับ)</div>
+      <div class="hint">ระบบจะแชร์ไฟล์/โฟลเดอร์นี้ให้คนที่เราต้องการส่งหา เมื่อถึงเวลาต้องเปิดเผยความลับ (ไม่บังคับ)</div>
 
-      <label for="trustees">Trusted contacts (คั่นด้วย comma)</label>
+      <label for="trustees">Trusted E-Mail contacts (หากมีหลายอีเมลให้คั่นด้วย , comma)</label>
       <input id="trustees" placeholder="b@example.com, c@example.com" />
       <div class="hint">อีเมลของผู้รับความลับ (Trustees)</div>
 
       <label for="checkinDays">Check-in interval (days)</label>
-      <input id="checkinDays" type="number" value="90" min="1" />
-      <div class="hint">ต้องเช็กอินทุก ๆ กี่วัน</div>
+      <input id="checkinDays" type="number" value="1" min="1" />
+      <div class="hint">ต้องการให้ส่งแจ้งเตือนเช็กอินที่ LINE ทุก ๆ กี่วัน?</div>
 
       <label for="graceHours">Grace period (hours)</label>
       <input id="graceHours" type="number" value="12" min="1" />
-      <div class="hint">ระยะเวลาผ่อนผันหลังครบกำหนดเช็กอิน ก่อนเปิดเผยความลับ</div>
+      <div class="hint">ระยะเวลาผ่อนผันกี่ ชม.?เมื่อหลังครบกำหนดเช็กอิน ก่อนระบบส่ง e-mail สั่งเสียให้รายชื่อคนที่เราไว้ใจ</div>
       
       <div style="margin-top:12px">
-        <button onclick="submitForm()">Create Vault</button>
+        <button onclick="submitForm()">Create Vault : สร้างเอกสารสั่งเสีย</button>
       </div>
       <div id="status" style="margin-top:20px; font-weight: bold;"></div>
     </div>
@@ -66,7 +66,7 @@
           if (resp.ok) {
             let msg = '✅ สร้าง Vault สำเร็จ! เอกสารหลัก: ' + resp.docUrl;
             if (resp.filesFolderUrl) {
-                msg += ' | ไฟล์แนบ: ' + resp.filesFolderUrl;
+                msg += ' | ไฟล์แนบ: ' + resp.filesFolderUrl + ' | สามารถปิดหน้านี้ได้เลย';
             }
             document.getElementById('status').textContent = msg;
             document.getElementById('status').style.color = '#4CAF50';
