@@ -48,10 +48,44 @@ function extractDriveId(urlOrId) {
 
 /* ---------- Web App (HTML serve) ---------- */
 function doGet(e) {
-  // serve simple HTML form for onboarding
+  // Check if this is an email/web fallback check-in request
+  if (e.parameter.vaultId && e.parameter.email && e.parameter.action === 'checkin') {
+    return handleWebCheckin(e);
+  }
+  
+  // Default: serve simple HTML form for onboarding
   const html = HtmlService.createTemplateFromFile('onboard').evaluate()
     .setTitle('Secret Keeper - Create Vault');
   return html;
+}
+
+/**
+ * Handles web-based check-in request (used for email fallback link).
+ */
+function handleWebCheckin(e) {
+  const vaultId = e.parameter.vaultId;
+  const ownerEmail = decodeURIComponent(e.parameter.email);
+  
+  const result = checkinVault(vaultId, ownerEmail);
+  
+  if (result.ok) {
+    return HtmlService.createHtmlOutput(
+      `<div style="font-family: Arial, sans-serif; padding: 30px; text-align: center; background-color: #f7f9fc; border-radius: 8px; max-width: 400px; margin: 50px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+         <h1 style="color: #38a169; font-size: 24px;">✅ Check-in สำเร็จ!</h1>
+         <p style="color: #4a5568; margin-top: 15px;">Vault ID: <strong style="word-break: break-all;">${vaultId}</strong> ได้รับการต่ออายุเรียบร้อยแล้ว</p>
+         <p style="color: #718096; font-size: 14px; margin-top: 20px;">คุณสามารถปิดหน้านี้ได้ทันที</p>
+       </div>`
+    ).setTitle('Check-in Success');
+  } else {
+    return HtmlService.createHtmlOutput(
+      `<div style="font-family: Arial, sans-serif; padding: 30px; text-align: center; background-color: #f7f9fc; border-radius: 8px; max-width: 400px; margin: 50px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
+         <h1 style="color: #e53e3e; font-size: 24px;">❌ Check-in ล้มเหลว</h1>
+         <p style="color: #4a5568; margin-top: 15px;">Vault ID: <strong style="word-break: break-all;">${vaultId}</strong></p>
+         <p style="color: #e53e3e; font-weight: bold;">สาเหตุ: ${result.error}</p>
+         <p style="color: #718096; font-size: 14px; margin-top: 20px;">กรุณาตรวจสอบ Vault Index หรือติดต่อผู้ดูแลระบบ</p>
+       </div>`
+    ).setTitle('Check-in Failed');
+  }
 }
 
 /* ---------- Web App (form submission and LINE webhook) ---------- */
@@ -105,8 +139,8 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
     replyLine(replyToken, '✅ กรุณากรอกข้อมูล Vault ของคุณที่นี่:\n' + onboardUrl);
 
   } else if (input === 'checkin') {
-    // 2. คำสั่ง checkin
-    checkin(userId);
+    // 2. คำสั่ง checkin (LINE: Checkin ALL active vaults)
+    checkinByLineId(userId);
     replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
     
   } else if (input === 'list') {
@@ -138,7 +172,7 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
 
 function handlePostback(userId, replyToken, data) {
   if (data === 'action=checkin') {
-    checkin(userId);
+    checkinByLineId(userId); // LINE: Checkin ALL active vaults
     replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
   } else if (data.startsWith('action=deactivate&vaultId=')) {
     const vaultId = data.split('=')[2];
@@ -184,7 +218,10 @@ function replyLine(replyToken, text) {
   UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', options);
 }
 
-function checkin(lineId) {
+/**
+ * Check-in function for LINE (updates ALL active vaults for the given Line ID).
+ */
+function checkinByLineId(lineId) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const nowISO = new Date().toISOString();
@@ -196,12 +233,47 @@ function checkin(lineId) {
     if (row[2] === lineId && row[10] === 'ACTIVE') {
       sh.getRange(r + 1, 10).setValue(nowISO); // update lastCheckinISO (Col 10)
       sh.getRange(r + 1, 13).setValue('');    // clear lastReminderISO (Col 13)
-      Logger.log(`Vault ${row[0]} checked in by ${lineId}. LastCheckin updated to ${nowISO}`);
+      Logger.log(`Vault ${row[0]} checked in by LINE ID: ${lineId}. LastCheckin updated to ${nowISO}`);
       // ไม่ return เพื่อให้เช็กอินทุก Vault ที่เป็น ACTIVE
     }
   }
   // No explicit message for checkin failed since line bot handles success message
 }
+
+/**
+ * Check-in function for Web/Email Fallback (updates a SINGLE specific vault).
+ * @param {string} vaultId 
+ * @param {string} ownerEmail 
+ * @returns {Object} {ok: boolean, error: string}
+ */
+function checkinVault(vaultId, ownerEmail) {
+  const sh = getSheet();
+  const data = sh.getDataRange().getValues();
+  const nowISO = new Date().toISOString();
+  
+  // Index mapping
+  // 0:vaultId, 1:ownerEmail, 10:status, 9:lastCheckinISO, 12:lastReminderISO
+  
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    if (row[0] === vaultId) {
+      if (row[1] !== ownerEmail) {
+         Logger.log(`Security alert: Attempted checkin on ${vaultId} with wrong email ${ownerEmail}`);
+         return { ok: false, error: 'Email verification failed: Owner email mismatch.' };
+      }
+      if (row[10] === 'ACTIVE') {
+         sh.getRange(r + 1, 10).setValue(nowISO); // update lastCheckinISO (Col 10)
+         sh.getRange(r + 1, 13).setValue('');    // clear lastReminderISO (Col 13)
+         Logger.log(`Vault ${vaultId} checked in via Web/Email by ${ownerEmail}. LastCheckin updated to ${nowISO}`);
+         return { ok: true };
+      } else {
+         return { ok: false, error: `Vault Status is ${row[10]}. Cannot check-in.` };
+      }
+    }
+  }
+  return { ok: false, error: 'Vault ID not found.' };
+}
+
 
 function submitVault(data) {
   const sh = getSheet();
@@ -334,7 +406,7 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
 function createDeactivationFlex(activeVaults) {
     const buttons = activeVaults.slice(0, 10).map((row, index) => { // Limit to 10 buttons (LINE constraint)
         const vaultId = row[0];
-        const vaultTitle = row[3]; // docId (approximate title)
+        const vaultTitle = row[3]; // docId (approximate title) - Should ideally use the doc name
         return {
             type: "button",
             style: "secondary",
@@ -423,6 +495,7 @@ function scheduledCheck() {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const now = new Date();
+  const webAppUrl = getScriptProps().getProperty('BASE_WEBAPP_URL');
 
   // Index mapping (adjusting for the new 'filesFolderId' at index 5)
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
@@ -523,14 +596,27 @@ function scheduledCheck() {
         
         if (millisSinceLastReminder > reminderInterval) {
           
+          // 1. Primary Reminder: LINE Flex Message
           if (ownerLineId) {
             const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
             sendLinePush(ownerLineId, flexMsg); // send Flex Message object
-          } else if (ownerEmail) {
-            // fallback: send email to owner (if LINE ID is missing)
-            GmailApp.sendEmail(ownerEmail, 'Secret Keeper - Final Check-in Reminder',
-              `ระบบตรวจไม่พบการเช็กอินเป็นเวลา ${checkinDays} วัน\nกรุณาเข้าสู่ระบบและยืนยันภายใน ${graceHours} ชั่วโมง`);
+            Logger.log(`LINE Flex Reminder sent for ${vaultId}`);
           }
+          
+          // 2. Fallback/Secondary Reminder: Email with Web Check-in Link
+          if (ownerEmail) {
+            // Construct the secure, vault-specific check-in URL
+            const checkinUrl = `${webAppUrl}?action=checkin&vaultId=${vaultId}&email=${encodeURIComponent(ownerEmail)}`;
+            
+            let emailBody = `ระบบ Secret Keeper ตรวจไม่พบการเช็กอินของคุณสำหรับ Vault ID: ${vaultId} เป็นเวลา ${checkinDays} วัน\n\n`;
+            emailBody += `⚠️ นี่คือการแจ้งเตือนฉุกเฉิน กรุณากดลิงก์ด้านล่างเพื่อยืนยันตัวตนของคุณภายใน **${graceHours} ชั่วโมง** ก่อนที่ Vault จะถูกเปิดเผย:\n\n`;
+            emailBody += `🔗 ลิงก์ยืนยันตัวตน (Proof-of-Life) ฉุกเฉิน:\n${checkinUrl}\n\n`;
+            emailBody += `(ลิงก์นี้ใช้ได้แม้ว่า LINE OA จะมีปัญหา หรือคุณไม่สะดวกเข้า LINE)\n\n---`;
+
+            GmailApp.sendEmail(ownerEmail, `🚨 SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`, emailBody);
+            Logger.log(`Email Check-in Fallback sent for ${vaultId}`);
+          }
+
           sh.getRange(r+1, 13).setValue(new Date().toISOString()); // set lastReminderISO (Col 13)
         }
       }
@@ -558,5 +644,5 @@ function listVaults() {
 }
 
 function checkinByOwner(ownerLineId) {
-  checkin(ownerLineId);
+  checkinByLineId(ownerLineId);
 }
