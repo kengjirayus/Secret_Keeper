@@ -22,7 +22,9 @@
       <input id="checkinDays" type="number" value="90" />
       <label>Grace period (hours)</label>
       <input id="graceHours" type="number" value="12" />
-      <input type="hidden" id="ownerLineId" />
+      
+      <!-- **REMOVED: Hidden Field for ownerLineId (No longer needed)** -->
+      
       <div style="margin-top:12px">
         <button onclick="submitForm()">Create Vault</button>
       </div>
@@ -30,16 +32,11 @@
     </div>
 
     <script>
-      // parse ownerLineId from URL if present
-      (function(){
-        const params = new URLSearchParams(window.location.search);
-        const ownerLineId = params.get('ownerLineId') || '';
-        if (ownerLineId) document.getElementById('ownerLineId').value = ownerLineId;
-      })();
-
+      // **REMOVED: Logic to parse ownerLineId from URL (No longer needed)**
+      
       function submitForm(){
         const data = {
-          ownerLineId: document.getElementById('ownerLineId').value,
+          // **REMOVED: ownerLineId from data object**
           vaultTitle: document.getElementById('vaultTitle').value,
           secretContent: document.getElementById('secretContent').value,
           trusteesCSV: document.getElementById('trustees').value,
@@ -51,7 +48,8 @@
           if (resp.ok) {
             document.getElementById('status').textContent = 'สร้างสำเร็จ! ดูได้ที่: ' + resp.docUrl;
           } else {
-            document.getElementById('status').textContent = 'เกิดข้อผิดพลาด';
+            // Display error message if Line ID is missing in Script Properties
+            document.getElementById('status').textContent = 'เกิดข้อผิดพลาด: ' + (resp.error || 'ไม่สามารถสร้าง Vault ได้ โปรดตรวจสอบ LINE_user_ID ใน Script Properties');
           }
         }).submitVault(data);
       }

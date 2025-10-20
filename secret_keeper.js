@@ -5,7 +5,7 @@
  * - Scheduled daily check: scheduledCheck -> activate vaults if overdue
  *
  * IMPORTANT:
- * - Set Script Properties: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET (optional), ADMIN_EMAIL, BASE_WEBAPP_URL
+ * - Set Script Properties: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET (optional), ADMIN_EMAIL, BASE_WEBAPP_URL, **LINE_user_ID**
  * - Deploy web app and set LINE webhook to the web app URL
  */
 
@@ -68,25 +68,43 @@ function doPost(e) {
 function handleTextMessage(userId, replyToken, text, webAppUrl) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
-  // We don't use Session.getActiveUser().getEmail() here because this is triggered by external LINE Webhook
   
-  if (text.toLowerCase().trim() === 'register') {
-    // Check if user already has an ACTIVE vault (optional: allow multiple)
+  const ownerLineIdFromProps = getScriptProps().getProperty('LINE_user_ID');
+  
+  // ตรวจสอบว่า Line ID ใน Properties ตรงกับผู้ใช้ปัจจุบันหรือไม่
+  // เนื่องจากระบบนี้ออกแบบมาสำหรับเจ้าของคนเดียว
+  if (userId !== ownerLineIdFromProps) {
+      replyLine(replyToken, 'ขออภัย ระบบนี้อนุญาตให้เฉพาะเจ้าของบัญชีหลักเท่านั้นที่ใช้งานได้');
+      return;
+  }
+  
+  const input = text.toLowerCase().trim();
+  const onboardUrl = `${webAppUrl}`; // URL ไม่มี parameter แล้ว
+
+  if (input === 'register') {
+    // 1. ตรวจสอบว่ามี Vault ที่ ACTIVE อยู่แล้วหรือไม่
     const existingVault = data.find(row => row[2] === userId && row[9] === 'ACTIVE');
+    
     if (existingVault) {
-      replyLine(replyToken, 'คุณมี Vault ที่เปิดใช้งานอยู่แล้ว ต้องการสร้างอีกหรือไม่? พิมพ์ "create" เพื่อสร้างใหม่');
+      // 1.1 ถ้ามี Vault อยู่แล้ว: แนะนำให้พิมพ์ "create"
+      replyLine(replyToken, 'คุณมี Vault ที่เปิดใช้งานอยู่แล้ว ต้องการสร้างอีกหรือไม่? พิมพ์ **"create"** เพื่อสร้างใหม่');
       return;
     }
 
-    // Send the onboarding link
-    const onboardUrl = `${webAppUrl}?ownerLineId=${userId}`;
+    // 1.2 ถ้ายังไม่มี: ส่งลิงก์ให้ลงทะเบียน
     replyLine(replyToken, 'กรุณากรอกข้อมูล Vault ของคุณที่นี่:\n' + onboardUrl);
-  } else if (text.toLowerCase().trim() === 'checkin') {
-    // For simple text check-in (less secure than postback)
+
+  } else if (input === 'create') {
+    // 2. ถ้าผู้ใช้พิมพ์ "create": ส่งลิงก์ฟอร์มให้เลย โดยไม่ต้องตรวจสอบซ้ำ
+    replyLine(replyToken, '✅ ยินดีครับ! กรุณากรอกข้อมูล Vault เพิ่มเติมที่นี่:\n' + onboardUrl);
+    
+  } else if (input === 'checkin') {
+    // 3. คำสั่ง checkin
     checkin(userId);
     replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
   } else {
-    replyLine(replyToken, 'ยินดีต้อนรับสู่ Secret Keeper! พิมพ์ "register" เพื่อสร้าง Vault ใหม่');
+    // 4. ข้อความอื่น ๆ
+    replyLine(replyToken, 'ยินดีต้อนรับสู่ Secret Keeper! พิมพ์ **"register"** เพื่อเริ่มสร้าง Vault');
   }
 }
 
@@ -139,6 +157,14 @@ function submitVault(data) {
   const sh = getSheet();
   const nowISO = new Date().toISOString();
   
+  // FIX: Fetch Line ID from Script Properties using the new name LINE_user_ID
+  const ownerLineIdFromProps = getScriptProps().getProperty('LINE_user_ID');
+  
+  if (!ownerLineIdFromProps) {
+      Logger.log('ERROR: LINE_user_ID is missing in Script Properties. Please set it.');
+      return { ok: false, error: 'LINE_user_ID is missing. Cannot create Vault.' };
+  }
+  
   // 1. Create Google Doc
   const doc = DocumentApp.create(data.vaultTitle || 'Untitled Secret Vault');
   doc.getBody().setText(data.secretContent || 'No content provided.');
@@ -151,7 +177,7 @@ function submitVault(data) {
   const newRow = [
     generateId('VAULT'),
     Session.getActiveUser().getEmail(), // ownerEmail (GAS deployer)
-    data.ownerLineId,
+    ownerLineIdFromProps, // **FIXED: Use ID from Script Properties**
     docId,
     docUrl,
     data.trusteesCSV,
@@ -170,7 +196,6 @@ function submitVault(data) {
 }
 
 /* ---------- LINE Message Builders ---------- */
-// **อัปเดต: รับ sheetUrl จาก scheduledCheck โดยตรง**
 function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
   return {
     type: "flex",
@@ -272,7 +297,6 @@ function sendLinePush(toLineUserId, payloadContent) {
 function scheduledCheck() {
   // This should be set as a time-driven trigger (daily)
   const sh = getSheet();
-  // **FIX: ดึง URL ของ Spreadsheet ที่ผูกอยู่กับ Sheet Object โดยตรง**
   const ssUrl = sh.getParent().getUrl(); 
   
   const data = sh.getDataRange().getValues();
@@ -355,7 +379,6 @@ function scheduledCheck() {
           
           // Use FLEX MESSAGE for LINE reminder
           if (ownerLineId) {
-            // **FIX: ส่ง ssUrl ที่ดึงมาอย่างถูกต้องแล้ว**
             const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
             sendLinePush(ownerLineId, flexMsg); // send Flex Message object
             Logger.log('LINE Flex Reminder sent.');
@@ -400,4 +423,3 @@ function listVaults() {
 function checkinByOwner(ownerLineId) {
   checkin(ownerLineId);
 }
-/* ---------- End of Secret Keeper ---------- */
