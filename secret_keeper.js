@@ -395,37 +395,51 @@ function createRegisterFlex(url) {
 }
 
 function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
-  // (Code remains the same as previous version)
   return {
     type: "flex",
     altText: "Secret Keeper: Reminder Check-in",
     contents: {
       type: "bubble",
+      header: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "⚠️ แจ้งเตือนเช็กอิน ⚠️",
+            weight: "bold",
+            size: "xl",
+            align: "center",
+            color: "#FFFFFF"
+          }
+        ],
+        backgroundColor: "#d32f2f",
+        paddingAll: "20px"
+      },
       body: {
         type: "box",
         layout: "vertical",
         contents: [
           {
             type: "text",
-            text: "🚨 แจ้งเตือนเช็กอิน 🚨",
-            weight: "bold",
-            size: "md"
-          },
-          {
-            type: "text",
-            text: `ระบบตรวจไม่พบการเช็กอินของคุณมานาน ${checkinDays} วัน`,
+            text: `ไม่พบการเช็กอินของคุณมานาน ${checkinDays} วัน`,
             wrap: true,
-            margin: "md"
+            margin: "md",
+            align: "center",
+            size: "lg"
           },
           {
             type: "text",
-            text: `กรุณากด "ยังอยู่" ภายใน ${graceHours} ชั่วโมง มิฉะนั้นระบบจะเปิดเผยความลับ`,
+            text: `กรุณากด "ยังอยู่" ภายใน ${graceHours} ชั่วโมง ก่อนที่ระบบจะเผยแพร่เอกสารของคุณให้กับ Trusted Contacts`,
             wrap: true,
             color: "#e84e4e",
-            size: "sm",
-            margin: "sm"
+            size: "md",
+            margin: "md",
+            align: "center"
           }
-        ]
+        ],
+        spacing: "md",
+        paddingAll: "20px"
       },
       footer: {
         type: "box",
@@ -438,24 +452,34 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
             color: "#30A900", // Green for positive action
             action: {
               type: "postback",
-              label: "✅ ฉันยังอยู่ (Check In)",
+              label: "👍 ฉันยังอยู่ (Check In)",
               data: "action=checkin", // This data is handled by handlePostback
               displayText: "ฉันยังอยู่ (Check In)"
-            }
+            },
+            height: "sm"
           },
           {
             type: "button",
             style: "secondary",
             action: {
               type: "uri",
-              label: "เปิด Vault Index (ถ้าต้องการแก้ไข)",
+              label: "แก้ไขเอกสารความลับของฉัน",
               uri: sheetUrl // ใช้ URL ที่รับมา
-            }
+            },
+            height: "sm"
           }
         ]
+      },
+      styles: {
+        body: {
+          backgroundColor: "#fff7f7"
+        },
+        footer: {
+          separator: true
+        }
       }
     }
-  }
+  };
 }
 
 /**
