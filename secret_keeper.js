@@ -123,7 +123,6 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
   }
   
   const input = text.toLowerCase().trim();
-  const onboardUrl = `${webAppUrl}`;
 
   // 1. ตรวจสอบสถานะ Vaults
   const activeVaults = data.filter(row => row[2] === userId && row[10] === 'ACTIVE');
@@ -131,13 +130,15 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
   if (input === 'register' || input === 'create') {
     // 1.1 ถ้ามี Vault ACTIVE อยู่แล้ว: แนะนำคำสั่ง create
     if (activeVaults.length > 0 && input === 'register') {
-      replyLine(replyToken, `คุณมี Vault ที่เปิดใช้งานอยู่แล้ว ${activeVaults.length} รายการ ต้องการสร้างอีกหรือไม่? พิมพ์ **"create"** เพื่อสร้างใหม่ หรือ **"list"** เพื่อดู Vault ที่มีอยู่`);
+      replyLine(replyToken, 'คุณมี Vault ที่เปิดใช้งานอยู่แล้ว ต้องการสร้างอีกหรือไม่? พิมพ์ **"create"** เพื่อสร้างใหม่ หรือ **"list"** เพื่อดู Vault ที่มีอยู่');
       return;
     }
 
-    // 1.2 ถ้าพิมพ์ register (และยังไม่มี ACTIVE) หรือพิมพ์ create: ส่งลิงก์ให้ลงทะเบียน
-    replyLine(replyToken, '✅ กรุณากรอกข้อมูล Vault ของคุณที่นี่:\n' + onboardUrl);
-
+    // 1.2 ถ้าพิมพ์ register (และยังไม่มี ACTIVE) หรือพิมพ์ create: ส่ง Flex Message ให้ลงทะเบียน
+    const onboardUrl = `${webAppUrl}?ownerLineId=${userId}`;
+    const registerFlex = createRegisterFlex(onboardUrl);
+    sendLinePush(userId, registerFlex);
+    
   } else if (input === 'checkin') {
     // 2. คำสั่ง checkin (LINE: Checkin ALL active vaults)
     checkinByLineId(userId);
@@ -333,7 +334,66 @@ function submitVault(data) {
   return { ok: true, docUrl: docUrl, filesFolderUrl: filesFolderUrl };
 }
 
-/* ---------- LINE Message Builders and Utils (UPDATED: Added Deactivation Flex) ---------- */
+/* ---------- LINE Message Builders and Utils (UPDATED: Added createRegisterFlex) ---------- */
+
+/**
+ * Creates a Flex Message for initiating vault registration via Web App.
+ * @param {string} url The Web App URL for registration.
+ * @returns {Object} Line Flex Message object.
+ */
+function createRegisterFlex(url) {
+  return {
+    type: "flex",
+    altText: "Secret Keeper: สร้าง Vault ใหม่",
+    contents: {
+      type: "bubble",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "🔒 สร้าง Vault (Secret Keeper)",
+            weight: "bold",
+            size: "md"
+          },
+          {
+            type: "text",
+            text: "กรุณากดปุ่มด้านล่างเพื่อไปยังหน้าเว็บแอป (Google Apps Script) เพื่อกรอกรายละเอียด Vault และ Trusted Contacts",
+            wrap: true,
+            margin: "md",
+            color: "#4a5568",
+            size: "sm"
+          },
+          {
+            type: "separator",
+            margin: "md"
+          },
+          {
+            type: "button",
+            style: "primary",
+            color: "#00B900", // LINE Green
+            margin: "md",
+            action: {
+              type: "uri",
+              label: "✨ สร้าง Vault ใหม่ (คลิก)",
+              uri: url
+            }
+          },
+          {
+            type: "text",
+            text: "หมายเหตุ: หากคุณไม่ได้ใช้ LINE OA ผ่านบัญชีหลัก Google App Script อาจต้องขอสิทธิ์เข้าถึงบัญชี Google",
+            wrap: true,
+            size: "xxs",
+            color: "#a0aec0",
+            margin: "md"
+          }
+        ]
+      }
+    }
+  }
+}
+
 function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
   // (Code remains the same as previous version)
   return {
@@ -490,14 +550,14 @@ function sendLinePush(toLineUserId, payloadContent) {
 }
 
 
-/* ---------- Scheduler: daily check (UPDATED: Index adjustment) ---------- */
+/* ---------- Scheduler: daily check ---------- */
 function scheduledCheck() {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const now = new Date();
   const webAppUrl = getScriptProps().getProperty('BASE_WEBAPP_URL');
 
-  // Index mapping (adjusting for the new 'filesFolderId' at index 5)
+  // Index mapping
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
   // 6:trustees, 7:checkinDays, 8:graceHours, 9:lastCheckinISO, 10:status, 11:createdAt, 12:lastReminderISO
 
@@ -646,3 +706,4 @@ function listVaults() {
 function checkinByOwner(ownerLineId) {
   checkinByLineId(ownerLineId);
 }
+/* ---------- End of Code ---------- */
