@@ -592,7 +592,7 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
         contents: [
           {
             type: "text",
-            text: `ไม่พบการเช็กอินของคุณมานาน ${checkinDays} วัน`,
+            text: `ไม่พบการเช็กอินของคุณ\nมานาน ${checkinDays} วัน`,
             wrap: true,
             margin: "md",
             align: "center",
@@ -633,7 +633,7 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
             style: "secondary",
             action: {
               type: "uri",
-              label: "แก้ไขเอกสารความลับของฉัน",
+              label: "เปิดดู/แก้ไข เอกสาร",
               uri: sheetUrl // ใช้ URL ที่รับมา
             },
             height: "sm"
