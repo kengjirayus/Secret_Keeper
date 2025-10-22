@@ -33,31 +33,66 @@ Secret Keeper คือระบบที่ทำงานร่วมกัน
 ระบบ Secret Keeper มี Flow การทำงานหลัก 3 ขั้นตอน: การสร้าง, การตรวจสอบ, และการเปิดเผย
 
 ```mermaid
-graph TD
-    subgraph A[การสร้าง Vault]
-        User[เจ้าของ Vault] -->|1. ลงทะเบียน| LINE_OA[LINE OA]
-        LINE_OA -->|2. ส่งข้อมูล| GAS[Google Apps Script]
-        GAS -->|3. สร้างเอกสาร| Drive[Google Drive]
-        GAS -->|4. บันทึก Index| Sheet[Google Sheet: VaultIndex]
-    end
-
-    subgraph B[การตรวจสอบ]
-        GAS -->|5. Trigger| Sheet
-        Sheet -->|6. ตรวจสอบ ACTIVE| GAS
-        GAS -->|7. แจ้งเตือน| LINE_OA
-        GAS -->|8. แจ้งเตือนฉุกเฉิน| Gmail[Gmail]
-        LINE_OA -->|9. Flex Message| User
-        Gmail -->|10. Email| User
-    end
+flowchart TD
+    Start([User เริ่มใช้งาน]) --> Register[User ส่งคำสั่ง 'register' ผ่าน LINE]
+    Register --> CheckActive{มี Vault<br/>ACTIVE อยู่แล้ว?}
     
-    subgraph C[การจัดการสถานะ]
-        User -->|11. Check-in| LINE_OA
-        LINE_OA -->|12. Postback| GAS
-        GAS -->|13. รีเซ็ตสถานะ| Sheet
-        GAS -->|14. Grace Time| Sheet
-        GAS -->|15. แชร์ไฟล์| Drive
-        Drive -->|16. ส่ง Email| Trustees[Trusted Contacts]
-    end
+    CheckActive -->|ใช่| ShowActive[แสดง Flex Message:<br/>คุณมี Vault อยู่แล้ว]
+    CheckActive -->|ไม่| OpenWeb[เปิดหน้าเว็บ<br/>กรอกข้อมูล Vault]
+    
+    ShowActive --> End1([จบ])
+    
+    OpenWeb --> FillForm[กรอกข้อมูล:<br/>- ชื่อ Vault<br/>- เนื้อหาลับ<br/>- Trusted Contacts<br/>- Check-in Days<br/>- Grace Hours<br/>- ไฟล์แนบ]
+    
+    FillForm --> CreateVault[สร้าง Vault<br/>Status: ACTIVE<br/>บันทึก lastCheckinISO]
+    
+    CreateVault --> DailyCheck[ระบบตรวจสอบอัตโนมัติ<br/>ทุก ๆ 24 ชม.]
+    
+    DailyCheck --> CalcTime[คำนวณเวลา:<br/>ตอนนี้ - lastCheckin]
+    
+    CalcTime --> CheckOverdue{เกิน<br/>checkinDays?}
+    
+    CheckOverdue -->|ไม่เกิน| WaitNext[รอตรวจสอบรอบถัดไป<br/>24 ชม.]
+    WaitNext --> DailyCheck
+    
+    CheckOverdue -->|เกิน| CheckGrace{เกิน<br/>Grace Hours?}
+    
+    CheckGrace -->|ยังไม่เกิน| CheckReminder{ส่ง Reminder<br/>ไปแล้วหรือยัง<br/>ใน 24 ชม.?}
+    
+    CheckReminder -->|ยังไม่ส่ง| SendReminder[ส่ง Reminder:<br/>1. LINE Flex Message<br/>2. Email พร้อมลิงก์ Check-in]
+    CheckReminder -->|ส่งแล้ว| WaitNext
+    
+    SendReminder --> UpdateReminder[บันทึก lastReminderISO]
+    UpdateReminder --> UserResponse{User ตอบกลับ?}
+    
+    UserResponse -->|ตอบ 'checkin'| UpdateCheckin[อัปเดต lastCheckinISO<br/>เคลียร์ lastReminderISO]
+    UpdateCheckin --> DailyCheck
+    
+    UserResponse -->|ไม่ตอบ| WaitGrace[รอจนครบ<br/>Grace Hours]
+    WaitGrace --> DailyCheck
+    
+    CheckGrace -->|เกิน Grace| ActivateVault[🚨 ACTIVATE VAULT<br/>Status: ACTIVATED]
+    
+    ActivateVault --> ShareDoc[แชร์เอกสาร Google Doc<br/>ให้ Trustees]
+    ShareDoc --> ShareFiles{มีไฟล์แนบ?}
+    
+    ShareFiles -->|มี| ShareFolder[แชร์ Folder/File<br/>ให้ Trustees]
+    ShareFiles -->|ไม่มี| SendEmail
+    
+    ShareFolder --> SendEmail[ส่ง Email ถึง Trustees<br/>พร้อมลิงก์เอกสารและไฟล์]
+    
+    SendEmail --> End2([จบ: Vault ถูกเปิดใช้งาน])
+    
+    style Start fill:#e1f5e1
+    style Register fill:#bbdefb
+    style CreateVault fill:#c8e6c9
+    style DailyCheck fill:#fff9c4
+    style SendReminder fill:#ffccbc
+    style ActivateVault fill:#ef5350,color:#fff
+    style ShareDoc fill:#ef9a9a
+    style SendEmail fill:#ef9a9a
+    style End2 fill:#ffcdd2
+    style UpdateCheckin fill:#a5d6a7
 ```
 
 ## 🛠️ Installation and Deployment Steps
