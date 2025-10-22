@@ -1,176 +1,160 @@
-Secret Keeper
-==============
+# Secret Keeper
 
-Secret Keeper is a Google Apps Script + LINE Official Account (OA) integration that manages "vaults" (Google Docs + optional attachments) and automatically reveals them to trusted contacts if the owner fails to check in within a configured timeframe.
+ระบบ "สั่งเสีย" เปิดเผยความลับอัตโนมัติ (Automated Vault Revelation System)
 
-This repository contains:
-- `secret_keeper.js` — the main Google Apps Script code (handles vault creation, scheduled checks, LINE webhook handlers, Flex message builders).
-- `index.js` — an optional Node.js webhook adapter for use with Cloud Run/GCP when LINE webhook cannot directly hit GAS.
-- `package.json` — for Cloud Run deployment.
-- `onboard.html` — a simple form used by the webapp onboarding flow (deployed as GAS web app).
+## 📝 Overview
 
-This README explains step-by-step setup for Google Apps Script (GAS) deployment and LINE OA configuration, and also documents an alternative: deploying `index.js` on Cloud Run to receive LINE webhooks and forward them to Apps Script or handle logic directly.
+Secret Keeper คือระบบที่ทำงานร่วมกันระหว่าง Google Apps Script (GAS) และ LINE Official Account (OA) เพื่อจัดการ "Vault" (เอกสาร Google Docs และไฟล์แนบใน Google Drive) และจะทำการเปิดเผยข้อมูลเหล่านั้นให้กับผู้ติดต่อที่ไว้ใจโดยอัตโนมัติ หากเจ้าของ Vault ไม่สามารถเช็กอิน (Check-in) ได้ภายในกรอบเวลาที่กำหนด
 
-Target audience
----------------
-This README is written for a developer or admin who will:
-- Deploy Google Apps Script as a Web App.
-- Configure a LINE Official Account (OA) and its webhook.
-- Optionally deploy a Node.js webhook on Cloud Run when direct webhook to GAS is not reliable.
+## 📂 Project Structure
 
-Prereqs
--------
-- Google account with access to Google Drive, Google Sheets, Gmail, and Google Apps Script.
-- LINE Official Account and access to the LINE Developers Console.
-- (Optional for Cloud Run) Google Cloud project with billing enabled and gcloud installed, a Docker environment or ability to use Cloud Build.
-- Node.js 16+ for local tests (if you use the Node webhook fallback).
+คลังเก็บโค้ดนี้ประกอบด้วย:
 
-Quick overview of flows
------------------------
-- Primary flow: GAS web app is deployed and used for 1) the onboarding HTML form (creating vaults), 2) the web fallback check-in link, and 3) scheduled checks. The LINE OA webhook events are handled by GAS `doPost` if you configure LINE webhook to the GAS web app URL.
-- Fallback flow (if LINE webhook cannot reliably reach GAS): Deploy `index.js` on Cloud Run and point LINE webhook to Cloud Run. The Node webhook will forward events to the GAS web app or perform the same logic directly.
+- `secret_keeper.js`: โค้ดหลักของ Google Apps Script ที่จัดการการสร้าง Vault, การตรวจสอบตามกำหนดเวลา, LINE Webhook และฟังก์ชัน Flex Message ต่างๆ
+- `onboard.html`: ไฟล์ HTML สำหรับแบบฟอร์มง่ายๆ ที่ใช้ในหน้าเว็บแอป (Web App) เพื่อลงทะเบียน Vault ใหม่
+- `index.js` และ `package.json`: โค้ด Node.js สำหรับใช้เป็น Proxy บน Google Cloud Functions หรือ Cloud Run (ทางเลือกเสริม)
 
-Important Script Properties (GAS)
----------------------------------
-Before deploying GAS, set the following Script Properties (File > Project properties > Script properties or via code):
-- `LINE_CHANNEL_ACCESS_TOKEN` — LINE channel access token (Messaging API).
-- `LINE_CHANNEL_SECRET` — LINE channel secret (optional but recommended).
-- `ADMIN_EMAIL` — admin email for notifications (optional).
-- `BASE_WEBAPP_URL` — the public URL of your deployed GAS web app (set this after deployment).
-- `LINE_user_ID` — the LINE userId of the primary account allowed to control the bot (optional, used as owner check).
-- `EMAIL_SENDER_NAME` — friendly name to use when sending emails from GmailApp.
+## 👥 Target Audience
 
-Step A — Deploy Google Apps Script (GAS)
-----------------------------------------
-1. Open the project
-   - Go to script.google.com, create a new project, and paste the contents of `secret_keeper.js` and `onboard.html` (or use the Apps Script CLI to push files).
+เอกสารนี้จัดทำขึ้นสำหรับนักพัฒนาหรือผู้ดูแลระบบที่ต้องการ:
 
-2. Set Script Properties
-   - In Apps Script: File > Project properties > Script properties
-   - Add the keys listed above. `BASE_WEBAPP_URL` can be set after you finish deployment.
+- ติดตั้ง Google Apps Script ให้ทำงานเป็น Web App
+- กำหนดค่า LINE Official Account (OA) และ Webhook
+- จัดการระบบที่ต้องการการตรวจสอบ "การมีชีวิตอยู่" (Proof-of-Life) อย่างต่อเนื่อง
 
-3. Enable required Services
-   - In the Apps Script editor: Services > Add a service
-     - Drive API (if advanced access required), or simply enable DriveApp usage.
-     - Gmail service (GmailApp) — used to send fallback emails.
-     - SpreadsheetApp and DocumentApp are standard. If not present, add them.
+## ⚙️ Prerequisites
 
-4. Deploy Web App
-   - Click Deploy > New deployment
-   - Choose type: Web app
-   - Execute as: Me (the owner) — so the script can access Drive/Gmail as needed
-   - Who has access: Anyone (or Anyone with Google account) — because the onboarding link and LINE webhook calls must be able to reach it. If you restrict it too much LINE's webhook cannot call it.
-   - Deploy and copy the Web App URL.
-   - Paste the URL to Script Properties as `BASE_WEBAPP_URL`.
+- บัญชี Google ที่สามารถเข้าถึง Google Drive, Google Sheets, Gmail และ Google Apps Script
+- LINE Official Account และสิทธิ์เข้าถึง LINE Developers Console
+- (ทางเลือก) Google Cloud Project ที่เปิดใช้งาน Billing Account สำหรับ Cloud Functions/Cloud Run
 
-5. Set up Triggers (the code uses scheduledCheck)
-   - In Apps Script: Triggers (clock icon) > Add Trigger
-   - Choose `scheduledCheck` as the function to run, and set to run daily or as desired.
+## 🗺️ System Diagram
 
-6. Testing the GAS endpoints
-   - Open the `BASE_WEBAPP_URL` in browser to see the onboarding page.
-   - Create a test vault via the onboarding page.
+ระบบ Secret Keeper มี Flow การทำงานหลัก 3 ขั้นตอน: การสร้าง, การตรวจสอบ, และการเปิดเผย
 
-Step B — Configure LINE Official Account (OA)
---------------------------------------------
-1. Create/Use a LINE OA in LINE Developers Console
-   - Create a Provider and a Messaging API Channel.
-   - Note these credentials: Channel Secret and Channel Access Token (long-lived token). Save them.
+```mermaid
+graph TD
+    subgraph A[การสร้าง Vault]
+        User[เจ้าของ Vault] -->|1. ลงทะเบียน| LINE_OA[LINE OA]
+        LINE_OA -->|2. ส่งข้อมูล| GAS[Google Apps Script]
+        GAS -->|3. สร้างเอกสาร| Drive[Google Drive]
+        GAS -->|4. บันทึก Index| Sheet[Google Sheet: VaultIndex]
+    end
 
-2. Set webhook URL
-   - In LINE Developers > Messaging API > Webhook settings
-   - Set the webhook URL to your GAS Web App URL (the one in `BASE_WEBAPP_URL`)
-   - Example: `https://script.google.com/macros/s/{DEPLOY_ID}/exec`
-   - Enable the webhook (Turn on).
-
-3. Add webhook event handling permissions
-   - In the Messaging API > settings, ensure the webhook is enabled and your bot is allowed to reply/push messages.
-
-4. Script Properties
-   - Add `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` into the GAS Script Properties (so the GAS code can call LINE APIs).
-
-5. Test from LINE
-   - Using the LINE account set in `LINE_user_ID` (or invite the bot), send 'register', 'list', 'checkin', and confirm the bot replies.
-
-Troubleshooting: LINE webhook cannot reach GAS
----------------------------------------------
-- Google Apps Script web apps sometimes have issues accepting POST webhooks from external services due to header constraints, or if the web app is not set to allow access by anyone. If the LINE webhook fails to reach GAS reliably, use the Cloud Run fallback.
-
-Step C — Cloud Run fallback (Node webhook)
-------------------------------------------
-If you cannot make LINE webhook reliably hit GAS, deploy `index.js` (this repo) as a Cloud Run service and point LINE webhook to it. The Node webhook can either:
-- Forward events to the GAS web app (POST), or
-- Implement the same logic as GAS (you can adapt `secret_keeper.js` into Node if necessary).
-
-Files included for fallback
-- `index.js` — an Express app that can accept LINE webhook events and forward to GAS or process them.
-- `package.json` — dependencies and start script.
-
-Basic Cloud Run deployment steps
-1. Ensure `gcloud` is installed and authenticated.
-2. Build and deploy:
-
-```bash
-# from repo root
-gcloud builds submit --tag gcr.io/PROJECT-ID/secret-keeper-webhook
-gcloud run deploy secret-keeper-webhook --image gcr.io/PROJECT-ID/secret-keeper-webhook --platform managed --region us-central1 --allow-unauthenticated
+    subgraph B[การตรวจสอบ]
+        GAS -->|5. Trigger| Sheet
+        Sheet -->|6. ตรวจสอบ ACTIVE| GAS
+        GAS -->|7. แจ้งเตือน| LINE_OA
+        GAS -->|8. แจ้งเตือนฉุกเฉิน| Gmail[Gmail]
+        LINE_OA -->|9. Flex Message| User
+        Gmail -->|10. Email| User
+    end
+    
+    subgraph C[การจัดการสถานะ]
+        User -->|11. Check-in| LINE_OA
+        LINE_OA -->|12. Postback| GAS
+        GAS -->|13. รีเซ็ตสถานะ| Sheet
+        GAS -->|14. Grace Time| Sheet
+        GAS -->|15. แชร์ไฟล์| Drive
+        Drive -->|16. ส่ง Email| Trustees[Trusted Contacts]
+    end
 ```
 
-3. Set LINE webhook URL to the Cloud Run URL provided after deployment.
+## 🛠️ Installation and Deployment Steps
 
-4. Environment variables for Node webhook
-   - The Node webhook will need the same LINE credentials:
-     - `LINE_CHANNEL_ACCESS_TOKEN`
-     - `LINE_CHANNEL_SECRET`
-   - If you forward events to GAS, set `GAS_WEBAPP_URL` (the `BASE_WEBAPP_URL`) so `index.js` can POST the events to GAS.
+### Google Apps Script
 
-5. Testing Cloud Run webhook
-   - Use ngrok locally or deploy to Cloud Run and set the webhook URL in LINE Developers.
-   - Test by sending messages to your LINE OA and confirm Cloud Run logs receive events.
+1. **Deploy โค้ด**
 
-Security
---------
-- Keep `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` secret. Use the Apps Script Script Properties for GAS and environment variables or Secret Manager for Cloud Run.
-- If you use Cloud Run, consider enabling authentication and using a verification token or signed forwarding to GAS.
+    - สร้างโปรเจกต์ Google Apps Script ใหม่.
+    - คัดลอกเนื้อหาในไฟล์ `secret_keeper.js` และ `onboard.html` ไปวางในไฟล์โค้ดและไฟล์ HTML ใน Apps Script Editor ตามลำดับ.
+    - Deploy โค้ดเป็น Web App โดยเลือกสิทธิ์การเข้าถึงเป็น "Anyone" และบันทึก URL ของ Web App ไว้ (เช่น `https://script.google.com/macros/s/DEPLOY_ID/exec`)
 
-Development notes & suggestions
--------------------------------
-- Document vault schema: `VaultIndex` sheet columns are expected in this order:
-  0. vaultId
-  1. ownerEmail
-  2. ownerLineId
-  3. docId
-  4. docUrl
-  5. filesFolderId
-  6. trustees
-  7. checkinDays
-  8. graceHours
-  9. lastCheckinISO
- 10. status
- 11. createdAt
- 12. lastReminderISO
+2. **ตั้งค่าตัวแปรใน Script Properties (สำคัญ)**
 
-- The code uses `LINE_user_ID` in Script Properties to restrict bot control. Remove this check if you want multiple users to interact with the bot.
+    ใน Apps Script Editor ไปที่ Project Settings (รูปเฟือง) > Script Properties เพื่อตั้งค่าตัวแปรดังต่อไปนี้:
 
-- Flex messages: The repository includes Flex builders for Register, Reminder, Deactivate, List, and default actions. Postback actions are used for checkin and deactivate; URI actions open the onboarding page.
+    | Property Key | คำอธิบาย | ตัวอย่างค่า |
+    |--------------|-------------|----------------|
+    | LINE_CHANNEL_ACCESS_TOKEN | Token ที่ใช้สำหรับ Push Message และ Reply (จาก LINE Developers Console) | xxxxxxxxxxxxxxxx |
+    | LINE_CHANNEL_SECRET | Secret Key สำหรับการยืนยัน Webhook | xxxxxxxxxxxxxxxx |
+    | ADMIN_EMAIL | อีเมลแอดมิน (ใช้ในการส่งอีเมลความลับและรับแจ้งเตือน) | admin@example.com |
+    | BASE_WEBAPP_URL | URL ของ Web App ที่ Deploy ไว้ในขั้นตอนที่ 1 | https://script.google.com/macros/s/DEPLOY_ID/exec |
+    | EMAIL_SENDER_NAME | ชื่อผู้ส่งอีเมล (เช่น "Secret Keeper Bot") | Secret Keeper |
+    | LINE_user_ID | User ID ของเจ้าของ LINE OA เพื่อจำกัดสิทธิ์การควบคุมบอท | Uxxxxxxxxxxxx |
 
-- Drive & Gmail permissions: The GAS project must be authorized to use Drive (to create/read docs, share with trustees) and Gmail (to send fallback emails).
+3. **ตั้งค่า LINE OA Webhook**
 
-Appendix — Example environment variables and Script Properties
--------------------------------------------------------------
-Script Properties (GAS):
-- LINE_CHANNEL_ACCESS_TOKEN=xxxxx
-- LINE_CHANNEL_SECRET=xxxxx
-- ADMIN_EMAIL=admin@example.com
-- BASE_WEBAPP_URL=https://script.google.com/macros/s/DEPLOY_ID/exec
-- LINE_user_ID=Uxxxxxxxxxxxx
-- EMAIL_SENDER_NAME=Secret Keeper Bot
+    ใน LINE Developers Console ของ Channel ท่าน ไปที่เมนู Messaging API.
 
-Cloud Run / Node env (example):
-- LINE_CHANNEL_ACCESS_TOKEN=xxxxx
-- LINE_CHANNEL_SECRET=xxxxx
-- GAS_WEBAPP_URL=https://script.google.com/macros/s/DEPLOY_ID/exec
+    - นำ URL ของ Web App ที่ได้จากขั้นตอนที่ 1 (หรือ URL Proxy จากขั้นตอนที่ 5) มาใส่ในช่อง Webhook URL.
+    - ตรวจสอบให้แน่ใจว่า Use Webhook ถูกเปิดใช้งาน.
 
-Contact / Maintainer
---------------------
-If you need help getting this set up, provide your GAS deployment URL and LINE Developer console settings (do not share secrets). I can help verify the webhook and Flex payloads.
+4. **ตั้งค่า Trigger (การตรวจสอบตามกำหนดเวลา)**
+
+    ใน Apps Script Editor ไปที่เมนู Triggers (รูปนาฬิกา).
+
+    - เพิ่ม Trigger ใหม่:
+        - Choose which function to run: `scheduledCheck`
+        - Select event source: Time-driven
+        - Select type of time based trigger: Hour timer
+        - Select hour interval: Every 12 hours (แนะนำ 12 ชั่วโมงเพื่อลด Grace Time Gap)
+
+5. **(ทางเลือก) การใช้ Cloud Functions/Cloud Run เป็น Proxy สำหรับ Webhook (แนะนำ)**
+
+    ถ้า LINE Webhook ส่ง Request มายัง Google Apps Script โดยตรงแล้วเกิดปัญหาความไม่เสถียร (เช่น Time out, HTTP 500 หรือ LINE ส่งซ้ำ), เราสามารถใช้ Google Cloud Functions (GCF) หรือ Cloud Run (Node.js Service) ทำหน้าที่เป็น Proxy เพื่อรับ Webhook จาก LINE และส่งต่อไปยัง GAS แทน ซึ่งจะช่วยรับประกันการตอบกลับสถานะ 200 OK กลับไปยัง LINE Platform ได้อย่างรวดเร็วและเสถียร
+
+    ไฟล์ที่เกี่ยวข้อง:
+
+    - `index.js`
+    - `package.json`
+
+    ขั้นตอน:
+
+    - เตรียมไฟล์: สร้าง Folder ชื่อ `GCP-Proxy` (หรือชื่ออื่น) และใส่ไฟล์ `index.js` และ `package.json` ที่ให้ไว้ในส่วนถัดไปลงไป
+    - ปรับค่า `GAS_WEBAPP_URL`: สำคัญ แก้ไขค่า `GAS_WEBAPP_URL` ในไฟล์ `index.js` ให้เป็น Execute URL ของ Google Apps Script ที่ท่าน Deploy ไว้ (จากขั้นตอน 1.3)
+    - Deploy ไปยัง GCP:
+        - สำหรับ Google Cloud Functions: สร้าง Function ใหม่ (เช่น `lineWebhookProxy`) โดยเลือก Runtime เป็น Node.js 20+ และกำหนด Entry point เป็น `lineWebhookProxy`
+        - สำหรับ Cloud Run: สร้าง Service ใหม่ และ Deploy Source Code จาก Folder นี้
+    - ใช้ URL Proxy: นำ URL Endpoint ที่ได้จาก Cloud Functions หรือ Cloud Run Service มาตั้งค่าในช่อง Webhook URL ใน LINE Developers Console (ขั้นตอน 3) แทน URL ของ GAS โดยตรง
+
+## 📊 Data Structure
+
+เมื่อรันโค้ดครั้งแรก ระบบจะสร้าง Google Sheet ชื่อ `VaultIndex` ขึ้นมาโดยอัตโนมัติ ซึ่งมี Header Row ตามลำดับดังนี้:
+
+| Column | Header | Description |
+|--------|---------|-------------|
+| 0 | vaultId | ID เฉพาะของ Vault (VAULT-...) |
+| 1 | ownerEmail | อีเมลของเจ้าของ Vault |
+| 2 | ownerLineId | User ID ของ LINE เจ้าของ Vault |
+| 3 | docId | ID ของ Google Doc ที่เก็บความลับ |
+| 4 | docUrl | URL ของ Google Doc |
+| 5 | filesFolderId | ID ของ Folder สำหรับไฟล์แนบ (ถ้ามี) |
+| 6 | trustees | รายชื่ออีเมลผู้ติดต่อที่ไว้ใจ (คั่นด้วย comma) |
+| 7 | checkinDays | กำหนดการเช็กอิน (หน่วย: วัน) |
+| 8 | graceHours | ระยะเวลาผ่อนผัน (หน่วย: ชั่วโมง) |
+| 9 | lastCheckinISO | วันที่/เวลาเช็กอินล่าสุด (ISO Format) |
+| 10 | status | สถานะของ Vault (ACTIVE, REMINDER, ACTIVATED, DEACTIVATED) |
+| 11 | createdAt | วันที่สร้าง Vault |
+| 12 | lastReminderISO | วันที่/เวลาที่ส่งการแจ้งเตือนฉุกเฉินครั้งล่าสุด (ISO Format) |
+
+## 💬 LINE Commands
+
+ระบบสามารถตอบสนองต่อข้อความและ Postback Action ดังนี้:
+
+| Command | Type | Description |
+|---------|------|-------------|
+| `register` | Text | เริ่มต้นกระบวนการสร้าง Vault |
+| `checkin` | Postback | ยืนยันตัวตนและรีเซ็ตเวลา |
+| `deactivate` | Text | หยุดการตรวจสอบ Vault |
+| `list` | Text | แสดงรายการ Vault ทั้งหมด |
+| `help` | Text | แสดงเมนูช่วยเหลือ |
+
+## 📧 Emergency Notifications (Dual-Channel Reminder)
+
+เมื่อ Vault พ้นกำหนด `checkinDays` ระบบจะเข้าสู่ช่วง `graceHours` (ระยะเวลาผ่อนผัน) ในช่วงนี้ ระบบจะทำการแจ้งเตือนฉุกเฉินดังนี้:
+
+- **LINE Reminder**: ส่ง Flex Message ที่มีปุ่ม Check-in
+- **Email Reminder**: ส่งอีเมลแจ้งเตือนพร้อมลิงก์ Check-in ฉุกเฉิน
+
+การดำเนินการนี้เป็นการ "ส่งคู่ขนาน" เพื่อให้มั่นใจว่าเจ้าของ Vault จะได้รับการแจ้งเตือนและลิงก์ Check-in อย่างแน่นอน แม้ช่องทาง LINE จะขัดข้องหรือมีปัญหาชั่วคราวก็ตาม
