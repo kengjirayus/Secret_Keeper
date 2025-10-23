@@ -287,34 +287,42 @@ function checkinByLineId(lineId) {
  * @param {string} ownerEmail 
  * @returns {Object} {ok: boolean, error: string}
  */
-function checkinVault(vaultId, ownerEmail) {
+/* ---------- Check-in Logic (triggered by LINE postback) ---------- */
+function checkinVault(ownerLineId, vaultId) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const nowISO = new Date().toISOString();
   
-  // Index mapping
-  // 0:vaultId, 1:ownerEmail, 10:status, 9:lastCheckinISO, 12:lastReminderISO
-  
+  console.log(`[CHECKIN ATTEMPT] Line ID: ${ownerLineId}, Vault ID: ${vaultId}`);
+
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
-    if (row[0] === vaultId) {
-      if (row[1] !== ownerEmail) {
-         Logger.log(`Security alert: Attempted checkin on ${vaultId} with wrong email ${ownerEmail}`);
-         return { ok: false, error: 'Email verification failed: Owner email mismatch.' };
-      }
-      if (row[10] === 'ACTIVE') {
-         sh.getRange(r + 1, 10).setValue(nowISO); // update lastCheckinISO (Col 10)
-         sh.getRange(r + 1, 13).setValue('');    // clear lastReminderISO (Col 13)
-         Logger.log(`Vault ${vaultId} checked in via Web/Email by ${ownerEmail}. LastCheckin updated to ${nowISO}`);
-         return { ok: true };
-      } else {
-         return { ok: false, error: `Vault Status is ${row[10]}. Cannot check-in.` };
+    const [
+      id, ownerEmail, lineId, docId, docUrl, filesFolderId, trusteesCSV,
+      checkinDays, graceHours, lastCheckinISO, status, createdAt, lastReminderISO, activatedNotified
+    ] = row;
+    
+    // 1. Validate ID and Status
+    if (id === vaultId && lineId === ownerLineId) {
+      if (status === 'ACTIVE' || status === 'REMINDER') {
+        // Update check-in time and status
+        sh.getRange(r+1, 10).setValue(nowISO); // lastCheckinISO (Col 10)
+        sh.getRange(r+1, 11).setValue('ACTIVE'); // status (Col 11)
+        sh.getRange(r+1, 13).setValue(''); // Clear lastReminderISO (Col 13)
+        sh.getRange(r+1, 14).setValue(''); // Clear activatedNotified (Col 14)
+        
+        console.log(`[CHECKIN SUCCESS] Vault ${vaultId} successfully checked in. Status reset to ACTIVE.`);
+        return { ok: true, message: `Vault ${vaultId} ได้รับการยืนยันแล้ว!` };
+      } else if (status === 'ACTIVATED') {
+        console.log(`[CHECKIN FAILED] Vault ${vaultId} is already ACTIVATED and cannot be checked in.`);
+        return { ok: false, message: `Vault ${vaultId} ถูกเปิดเผยไปแล้ว ไม่สามารถเช็กอินได้อีก!` };
       }
     }
   }
-  return { ok: false, error: 'Vault ID not found.' };
-}
 
+  console.log(`[CHECKIN FAILED] Vault ${vaultId} not found or ID mismatch for Line ID: ${ownerLineId}`);
+  return { ok: false, message: `ไม่พบ Vault ID: ${vaultId} หรือ Line ID ของคุณไม่ตรงกับเจ้าของ!` };
+}
 
 function submitVault(data) {
   const sh = getSheet();
@@ -370,7 +378,7 @@ function submitVault(data) {
   ];
   
   sh.appendRow(newRow);
-  Logger.log(`New Vault created: ${newRow[0]}. Doc URL: ${docUrl}, Folder ID: ${filesFolderId}`);
+  console.log(`[VAULT CREATED] New Vault ${newRow[0]}. Doc URL: ${docUrl}, Folder ID: ${filesFolderId}`);
 
   return { ok: true, docUrl: docUrl, filesFolderUrl: filesFolderUrl };
 }
@@ -748,6 +756,7 @@ function sendLinePush(toLineUserId, payloadContent) {
 
 /* ---------- Scheduler: daily check ---------- */
 function scheduledCheck() {
+  console.log('scheduledCheck started');
   const sh = getSheet();
   const props = getScriptProps();
   const data = sh.getDataRange().getValues();
@@ -755,6 +764,8 @@ function scheduledCheck() {
   const webAppUrl = props.getProperty('BASE_WEBAPP_URL');
   
   const SENDER_NAME = props.getProperty('EMAIL_SENDER_NAME') || 'Secret Keeper Default Sender'; 
+
+  console.log(`Found ${data.length - 1} vaults to check.`);
 
   // Index mapping (0-based in data array):
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
@@ -777,7 +788,12 @@ function scheduledCheck() {
       const lastReminderISO = row[12];
       const activatedNotified = row[13]; // may be undefined for older rows
       
-      if (status !== 'ACTIVE') continue;
+      console.log(`Processing vault ${vaultId} with status: ${status}`);
+      
+      if (status !== 'ACTIVE') {
+        console.log(`Vault ${vaultId} is not ACTIVE, skipping.`);
+        continue;
+      }
 
       const lastCheckin = lastCheckinISO ? new Date(lastCheckinISO) : new Date(row[11]);
       const lastReminderTime = lastReminderISO ? new Date(lastReminderISO) : new Date(0);
@@ -791,6 +807,8 @@ function scheduledCheck() {
       const overdue = now >= checkinDeadlineTime;
       const fullyOverdue = now >= activationTime;
       
+      console.log(`Vault ${vaultId}: lastCheckin=${lastCheckinISO}, overdue=${overdue}, fullyOverdue=${fullyOverdue}`);
+
       const ssUrl = sh.getParent().getUrl(); 
 
       if (fullyOverdue) {
@@ -817,7 +835,7 @@ function scheduledCheck() {
                 file.addEditors(trustees); // Share the single file
                 filesUrl = file.getUrl();
               } catch (e) {
-                Logger.log(`ERROR: Could not find or share Drive resource ${filesFolderId}: ${e.message}`);
+                console.log(`ERROR: Could not find or share Drive resource ${filesFolderId}: ${e.message}`);
                 filesUrl = 'Error: Resource not found/shared.';
               }
             }
@@ -840,16 +858,16 @@ function scheduledCheck() {
           trustees.forEach(t => {
             try { 
               GmailApp.sendEmail(t, subject, body, { name: SENDER_NAME });
-              Logger.log(`Email sent to Trustee: ${t} with sender name: ${SENDER_NAME}`);
+              console.log(`Email sent to Trustee: ${t} with sender name: ${SENDER_NAME}`);
             } catch(e){ 
-              Logger.log('send mail err to ' + t + ': ' + e); 
+              console.log('send mail err to ' + t + ': ' + e); 
             }
           });
         }
         
         // update status
         sh.getRange(r+1, 11).setValue('ACTIVATED'); // Status is at Column 11
-        Logger.log(`STATUS: Vault ${vaultId} marked as ACTIVATED.`);
+        console.log(`STATUS: Vault ${vaultId} marked as ACTIVATED.`);
         
         // NEW: Notify owner (Email + LINE) once only (use activatedNotified flag/column)
         try {
@@ -874,9 +892,9 @@ function scheduledCheck() {
             if (ownerEmail) {
               try {
                 GmailApp.sendEmail(ownerEmail, ownerSubject, ownerBody, { name: SENDER_NAME });
-                Logger.log(`Owner notified by email for Vault ${vaultId} (sender: ${SENDER_NAME})`);
+                console.log(`Owner notified by email for Vault ${vaultId} (sender: ${SENDER_NAME})`);
               } catch (e) {
-                Logger.log(`Failed to send owner email for ${vaultId}: ${e}`);
+                console.log(`Failed to send owner email for ${vaultId}: ${e}`);
               }
             }
 
@@ -884,9 +902,9 @@ function scheduledCheck() {
               const ownerAlertLineText = `🚨 ALERT: Vault ID ${vaultId} ถูกเปิดเผยแล้ว! เอกสารถูกแชร์ไปยังผู้ติดต่อที่ไว้ใจ\n\n❌ หากผิดพลาด: โปรดเข้า Drive และ **ยกเลิกการแชร์ทันที!** (ตรวจสอบ Email สำหรับคำแนะนำฉบับเต็ม)`;
               try {
                 sendLinePush(ownerLineId, ownerAlertLineText);
-                Logger.log(`Owner notified by LINE for Vault ${vaultId}`);
+                console.log(`Owner notified by LINE for Vault ${vaultId}`);
               } catch (e) {
-                Logger.log(`Failed to send owner LINE notification for ${vaultId}: ${e}`);
+                console.log(`Failed to send owner LINE notification for ${vaultId}: ${e}`);
               }
             }
 
@@ -894,7 +912,7 @@ function scheduledCheck() {
             sh.getRange(r+1, 14).setValue(new Date().toISOString()); // Column 14 = activatedNotified
           }
         } catch (notifyErr) {
-          Logger.log(`Error notifying owner for ${vaultId}: ${notifyErr}`);
+          console.log(`Error notifying owner for ${vaultId}: ${notifyErr}`);
         }
         
       } else if (overdue) {
@@ -908,7 +926,7 @@ function scheduledCheck() {
           if (ownerLineId) {
             const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
             sendLinePush(ownerLineId, flexMsg); // send Flex Message object
-            Logger.log(`LINE Flex Reminder sent for ${vaultId}`);
+            console.log(`LINE Flex Reminder sent for ${vaultId}`);
           }
           
           // 2. Fallback/Secondary Reminder: Email with Web Check-in Link
@@ -924,17 +942,20 @@ function scheduledCheck() {
             const subject = `SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`;
             // *** UPDATED: Use SENDER_NAME from properties ***
             GmailApp.sendEmail(ownerEmail, subject, emailBody, { name: SENDER_NAME });
-            Logger.log(`Email Check-in Fallback sent for ${vaultId} with sender name: ${SENDER_NAME}`);
+            console.log(`Email Check-in Fallback sent for ${vaultId} with sender name: ${SENDER_NAME}`);
           }
 
           sh.getRange(r+1, 13).setValue(new Date().toISOString()); // set lastReminderISO (Col 13)
         }
+      } else {
+        console.log(`Vault ${vaultId} is not overdue. No action taken.`);
       }
       
     } catch(err) {
-      Logger.log('scheduledCheck row err on row ' + (r+1) + ': ' + err.message);
+      console.log('scheduledCheck row err on row ' + (r+1) + ': ' + err.message);
     }
   }
+  console.log('scheduledCheck finished');
 }
 
 /* ---------- Admin utility: list vaults (for debugging) ---------- */
@@ -946,13 +967,12 @@ function listVaults() {
   for (let r = 1; r < data.length; r++){
     out.push({
       vaultId: data[r][0],
-      status: data[r][10], 
-      ownerLineId: data[r][2]
+      status: data[r][10], // Col K
+      ownerLineId: data[r][2],
+      lastCheckinISO: data[r][9], // Col J
+      lastReminderISO: data[r][12] // Col M
     });
   }
-  Logger.log(JSON.stringify(out, null, 2));
-}
-
-function checkinByOwner(ownerLineId) {
-  checkinByLineId(ownerLineId);
+  console.log(out);
+  return out;
 }
