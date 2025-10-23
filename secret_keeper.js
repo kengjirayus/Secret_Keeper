@@ -25,8 +25,9 @@ function getSheet() {
     // create header row
     const sh = ss.getActiveSheet();
     sh.appendRow([
-      'vaultId','ownerEmail','ownerLineId','docId','docUrl','filesFolderId','trustees','checkinDays','graceHours', // เพิ่ม 'filesFolderId' ที่ index 5
-      'lastCheckinISO','status','createdAt','lastReminderISO'
+      'vaultId','ownerEmail','ownerLineId','docId','docUrl','filesFolderId','trustees','checkinDays','graceHours',
+      'lastCheckinISO','status','createdAt','lastReminderISO',
+      'activatedNotified' // NEW: timestamp when owner was notified about ACTIVATED (prevents duplicates)
     ]);
   }
   return ss.getActiveSheet();
@@ -364,7 +365,8 @@ function submitVault(data) {
     nowISO, // lastCheckinISO (current time)
     'ACTIVE', // status
     nowISO, // createdAt
-    '' // lastReminderISO (empty)
+    '', // lastReminderISO (empty)
+    ''  // NEW: activatedNotified (empty until owner is notified)
   ];
   
   sh.appendRow(newRow);
@@ -752,12 +754,11 @@ function scheduledCheck() {
   const now = new Date();
   const webAppUrl = props.getProperty('BASE_WEBAPP_URL');
   
-  // *** NEW: Get Sender Name from Script Properties ***
   const SENDER_NAME = props.getProperty('EMAIL_SENDER_NAME') || 'Secret Keeper Default Sender'; 
 
-  // Index mapping
+  // Index mapping (0-based in data array):
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
-  // 6:trustees, 7:checkinDays, 8:graceHours, 9:lastCheckinISO, 10:status, 11:createdAt, 12:lastReminderISO
+  // 6:trustees, 7:checkinDays, 8:graceHours, 9:lastCheckinISO, 10:status, 11:createdAt, 12:lastReminderISO, 13:activatedNotified
 
   for (let r = 1; r < data.length; r++) {
     try {
@@ -774,6 +775,7 @@ function scheduledCheck() {
       const lastCheckinISO = row[9];
       const status = row[10]; // Status is at index 10
       const lastReminderISO = row[12];
+      const activatedNotified = row[13]; // may be undefined for older rows
       
       if (status !== 'ACTIVE') continue;
 
@@ -848,6 +850,52 @@ function scheduledCheck() {
         // update status
         sh.getRange(r+1, 11).setValue('ACTIVATED'); // Status is at Column 11
         Logger.log(`STATUS: Vault ${vaultId} marked as ACTIVATED.`);
+        
+        // NEW: Notify owner (Email + LINE) once only (use activatedNotified flag/column)
+        try {
+          if (!activatedNotified) {
+            // Compose owner notification content (Thai) as requested
+            const ownerSubject = `🚨 ALERT: Vault ID ${vaultId} ถูกเปิดเผยแล้ว (Activated)`;
+            let ownerBody = `เรียน เจ้าของ Vault (${ownerEmail})\n\n`;
+            ownerBody += `เอกสารความลับของคุณได้ถูก **เปิดเผย (Activated)** และแชร์ไปยังผู้ติดต่อที่ไว้ใจของคุณเรียบร้อยแล้ว เนื่องจากคุณไม่ได้ทำการ Check-in ภายในระยะเวลาที่กำหนด (${checkinDays} วัน + ${graceHours} ชั่วโมง)\n\n`;
+            ownerBody += `--- ข้อมูล Vault ---\nVault ID: ${vaultId}\nสถานะ: ACTIVATED\nลิงก์ Google Doc: ${docUrl}\n`;
+            if (filesFolderId) {
+              ownerBody += `ลิงก์ Folder ไฟล์แนบ: https://drive.google.com/drive/folders/${filesFolderId}\n`;
+            } else if (filesUrl) {
+              ownerBody += `ลิงก์ Folder ไฟล์แนบ: ${filesUrl}\n`;
+            } else {
+              ownerBody += `ลิงก์ Folder ไฟล์แนบ: (ไม่มี)\n`;
+            }
+            ownerBody += `\nหากการเปิดเผยนี้เกิดจากความผิดพลาด/ไม่ได้ตั้งใจ: **อย่าตื่นตระหนก!** คุณยังมีโอกาสแก้ไขได้\n\n`;
+            ownerBody += `1. เข้าไปยังลิงก์ Google Doc และ Folder ไฟล์แนบด้านบนทันที\n`;
+            ownerBody += `2. ทำการ **ยกเลิกการแชร์ (Stop sharing)** สำหรับเอกสารและ Folder ไฟล์แนบทั้งหมด\n`;
+            ownerBody += `3. หากทำได้ทันเวลา ผู้รับเอกสารดังกล่าวอาจจะยังไม่ได้เปิดอ่านข้อความของคุณ ความลับของคุณ "อาจจะ" ยังไม่ถูกอ่านแม้จะได้รับอีเมลแล้วก็ตาม\n\n---`;
+
+            if (ownerEmail) {
+              try {
+                GmailApp.sendEmail(ownerEmail, ownerSubject, ownerBody, { name: SENDER_NAME });
+                Logger.log(`Owner notified by email for Vault ${vaultId} (sender: ${SENDER_NAME})`);
+              } catch (e) {
+                Logger.log(`Failed to send owner email for ${vaultId}: ${e}`);
+              }
+            }
+
+            if (ownerLineId) {
+              const ownerAlertLineText = `🚨 ALERT: Vault ID ${vaultId} ถูกเปิดเผยแล้ว! เอกสารถูกแชร์ไปยังผู้ติดต่อที่ไว้ใจ\n\n❌ หากผิดพลาด: โปรดเข้า Drive และ **ยกเลิกการแชร์ทันที!** (ตรวจสอบ Email สำหรับคำแนะนำฉบับเต็ม)`;
+              try {
+                sendLinePush(ownerLineId, ownerAlertLineText);
+                Logger.log(`Owner notified by LINE for Vault ${vaultId}`);
+              } catch (e) {
+                Logger.log(`Failed to send owner LINE notification for ${vaultId}: ${e}`);
+              }
+            }
+
+            // Mark as notified to avoid duplicate notifications in future runs
+            sh.getRange(r+1, 14).setValue(new Date().toISOString()); // Column 14 = activatedNotified
+          }
+        } catch (notifyErr) {
+          Logger.log(`Error notifying owner for ${vaultId}: ${notifyErr}`);
+        }
         
       } else if (overdue) {
         // --- SEND REMINDER (DEADLINE PASSED, STILL IN GRACE) ---
