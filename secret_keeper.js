@@ -25,7 +25,7 @@ function getSheet() {
     // create header row
     const sh = ss.getActiveSheet();
     sh.appendRow([
-      'vaultId','ownerEmail','ownerLineId','docId','docUrl','filesFolderId','trustees','checkinDays','graceHours',
+      'vaultId','ownerEmail','ownerLineId','docId','docUrl','filesFolderId','trustees','checkinDays','graceHours', // เพิ่ม 'filesFolderId' ที่ index 5
       'lastCheckinISO','status','createdAt','lastReminderISO',
       'activatedNotified' // NEW: timestamp when owner was notified about ACTIVATED (prevents duplicates)
     ]);
@@ -67,7 +67,8 @@ function handleWebCheckin(e) {
   const vaultId = e.parameter.vaultId;
   const ownerEmail = decodeURIComponent(e.parameter.email);
   
-  const result = checkinVault(vaultId, ownerEmail);
+  // Use checkinVault (which now handles email fallback logic correctly)
+  const result = checkinVault(null, vaultId, ownerEmail); 
   
   if (result.ok) {
     return HtmlService.createHtmlOutput(
@@ -144,8 +145,8 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
     
   } else if (input === 'checkin') {
     // 2. คำสั่ง checkin (LINE: Checkin ALL active vaults)
-    checkinByLineId(userId);
-    replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
+    const result = checkinByLineId(userId);
+    replyLine(replyToken, result.message);
     
   } else if (input === 'list') {
     // 3. คำสั่ง list (ใหม่)
@@ -165,7 +166,7 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
     }
     // ใช้ Flex Message เพื่อให้เลือก Vault ที่ต้องการยกเลิก
     const flexMsg = createDeactivationFlex(activeVaults);
-  replyFlex(replyToken, flexMsg);
+    replyFlex(replyToken, flexMsg);
 
   } else {
     // 5. ข้อความอื่น ๆ -> Show default Flex with quick actions
@@ -176,8 +177,8 @@ function handleTextMessage(userId, replyToken, text, webAppUrl) {
 
 function handlePostback(userId, replyToken, data) {
   if (data === 'action=checkin') {
-    checkinByLineId(userId); // LINE: Checkin ALL active vaults
-    replyLine(replyToken, 'เช็กอินสำเร็จ! Vault ของคุณถูกต่ออายุแล้ว');
+    const result = checkinByLineId(userId); // LINE: Checkin ALL active vaults
+    replyLine(replyToken, result.message);
     return;
   } else if (data === 'action=list') {
     // Return the active vaults list as a Flex message when user taps the 'List' postback button
@@ -205,13 +206,13 @@ function deactivateVault(vaultId, ownerLineId) {
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
     // Index 2: ownerLineId, Index 10: status
-    if (row[0] === vaultId && row[2] === ownerLineId && row[10] === 'ACTIVE') {
+    if (row[0] === vaultId && row[2] === ownerLineId && (row[10] === 'ACTIVE' || row[10] === 'REMINDER')) {
       sh.getRange(r + 1, 11).setValue('DEACTIVATED'); // update status (Col 11)
       Logger.log(`Vault ${vaultId} manually DEACTIVATED by ${ownerLineId}`);
       return true;
     }
   }
-  Logger.log(`Deactivation failed: Vault ${vaultId} not found or not ACTIVE for Line ID: ${ownerLineId}`);
+  Logger.log(`Deactivation failed: Vault ${vaultId} not found or not ACTIVE/REMINDER for Line ID: ${ownerLineId}`);
   return false;
 }
 
@@ -266,44 +267,58 @@ function checkinByLineId(lineId) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const nowISO = new Date().toISOString();
+  let updatedCount = 0;
   
   // Index 10: status, Index 9: lastCheckinISO, Index 12: lastReminderISO
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
-    // Check by Line ID and ensure status is ACTIVE
-    if (row[2] === lineId && row[10] === 'ACTIVE') {
+    // Check by Line ID and ensure status is ACTIVE or REMINDER
+    if (row[2] === lineId && (row[10] === 'ACTIVE' || row[10] === 'REMINDER')) {
       sh.getRange(r + 1, 10).setValue(nowISO); // update lastCheckinISO (Col 10)
+      sh.getRange(r + 1, 11).setValue('ACTIVE'); // set status to ACTIVE (Col 11)
       sh.getRange(r + 1, 13).setValue('');    // clear lastReminderISO (Col 13)
       Logger.log(`Vault ${row[0]} checked in by LINE ID: ${lineId}. LastCheckin updated to ${nowISO}`);
-      // ไม่ return เพื่อให้เช็กอินทุก Vault ที่เป็น ACTIVE
+      updatedCount++;
     }
   }
-  // No explicit message for checkin failed since line bot handles success message
+  
+  if (updatedCount > 0) {
+    return { ok: true, message: `เช็กอินสำเร็จ! Vault ทั้ง ${updatedCount} รายการของคุณถูกต่ออายุแล้ว` };
+  } else {
+    return { ok: false, message: 'ไม่พบ Vault ที่อยู่ในสถานะ ACTIVE หรือ REMINDER ให้เช็กอิน' };
+  }
 }
 
 /**
  * Check-in function for Web/Email Fallback (updates a SINGLE specific vault).
+ * @param {string | null} ownerLineId (Can be null if checking in via email)
  * @param {string} vaultId 
- * @param {string} ownerEmail 
+ * @param {string | null} ownerEmail (Can be null if checking in via LINE, but required for email checkin)
  * @returns {Object} {ok: boolean, error: string}
  */
-/* ---------- Check-in Logic (triggered by LINE postback) ---------- */
-function checkinVault(ownerLineId, vaultId) {
+function checkinVault(ownerLineId, vaultId, ownerEmail) {
   const sh = getSheet();
   const data = sh.getDataRange().getValues();
   const nowISO = new Date().toISOString();
   
-  console.log(`[CHECKIN ATTEMPT] Line ID: ${ownerLineId}, Vault ID: ${vaultId}`);
+  console.log(`[CHECKIN ATTEMPT] Vault ID: ${vaultId}, Line ID: ${ownerLineId}, Email: ${ownerEmail}`);
 
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
     const [
-      id, ownerEmail, lineId, docId, docUrl, filesFolderId, trusteesCSV,
+      id, email, lineId, docId, docUrl, filesFolderId, trusteesCSV,
       checkinDays, graceHours, lastCheckinISO, status, createdAt, lastReminderISO, activatedNotified
     ] = row;
     
-    // 1. Validate ID and Status
-    if (id === vaultId && lineId === ownerLineId) {
+    // 1. Validate ID
+    if (id === vaultId) {
+      // 2. Validate Ownership (must match either LINE ID or Email)
+      if (lineId !== ownerLineId && email !== ownerEmail) {
+         console.log(`[CHECKIN FAILED] Security alert: Attempted checkin on ${vaultId} with wrong credentials (Line: ${ownerLineId}, Email: ${ownerEmail})`);
+         return { ok: false, error: 'Email/LINE ID verification failed: Owner mismatch.' };
+      }
+      
+      // 3. Validate Status
       if (status === 'ACTIVE' || status === 'REMINDER') {
         // Update check-in time and status
         sh.getRange(r+1, 10).setValue(nowISO); // lastCheckinISO (Col 10)
@@ -315,13 +330,16 @@ function checkinVault(ownerLineId, vaultId) {
         return { ok: true, message: `Vault ${vaultId} ได้รับการยืนยันแล้ว!` };
       } else if (status === 'ACTIVATED') {
         console.log(`[CHECKIN FAILED] Vault ${vaultId} is already ACTIVATED and cannot be checked in.`);
-        return { ok: false, message: `Vault ${vaultId} ถูกเปิดเผยไปแล้ว ไม่สามารถเช็กอินได้อีก!` };
+        return { ok: false, error: `Vault ${vaultId} ถูกเปิดเผยไปแล้ว ไม่สามารถเช็กอินได้อีก!` };
+      } else {
+         console.log(`[CHECKIN FAILED] Vault ${vaultId} status is ${status}. Cannot check-in.`);
+         return { ok: false, error: `Vault Status is ${status}. Cannot check-in.` };
       }
     }
   }
 
-  console.log(`[CHECKIN FAILED] Vault ${vaultId} not found or ID mismatch for Line ID: ${ownerLineId}`);
-  return { ok: false, message: `ไม่พบ Vault ID: ${vaultId} หรือ Line ID ของคุณไม่ตรงกับเจ้าของ!` };
+  console.log(`[CHECKIN FAILED] Vault ${vaultId} not found.`);
+  return { ok: false, error: `ไม่พบ Vault ID: ${vaultId}` };
 }
 
 function submitVault(data) {
@@ -670,13 +688,14 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
 function createDeactivationFlex(activeVaults) {
     const buttons = activeVaults.slice(0, 10).map((row, index) => { // Limit to 10 buttons (LINE constraint)
         const vaultId = row[0];
-        const vaultTitle = row[3]; // docId (approximate title) - Should ideally use the doc name
+        // Column 3 is docId. Let's use the first 20 chars of docId as a title
+        const vaultTitle = row[3] ? row[3].substring(0, 20) : 'Vault ' + (index+1); 
         return {
             type: "button",
             style: "secondary",
             action: {
                 type: "postback",
-                label: `ยกเลิก: ${vaultTitle.substring(0, 20)}...`,
+                label: `ยกเลิก: ${vaultTitle}...`,
                 data: `action=deactivate&vaultId=${vaultId}`,
                 displayText: `ต้องการยกเลิก Vault ID: ${vaultId}`
             }
@@ -790,8 +809,8 @@ function scheduledCheck() {
       
       console.log(`Processing vault ${vaultId} with status: ${status}`);
       
-      if (status !== 'ACTIVE') {
-        console.log(`Vault ${vaultId} is not ACTIVE, skipping.`);
+      if (status !== 'ACTIVE' && status !== 'REMINDER') {
+        console.log(`Vault ${vaultId} status is ${status}. Skipping check.`);
         continue;
       }
 
@@ -811,66 +830,82 @@ function scheduledCheck() {
 
       const ssUrl = sh.getParent().getUrl(); 
 
-      if (fullyOverdue) {
-        // --- ACTIVATE VAULT (GRACE PERIOD PASSED) ---
+      // **********************************************
+      // 1. ACTIVATION LOGIC (overdue + grace period passed)
+      // **********************************************
+      // If activation time is reached AND status is REMINDER (meaning owner was warned)
+      // OR if status is ACTIVE and graceHours is 0 (meaning immediate activation)
+      if (fullyOverdue && (status === 'REMINDER' || (status === 'ACTIVE' && graceHours === 0))) {
         
-        const trustees = trusteesCSV.split(',').map(s => s.trim()).filter(Boolean);
-        let filesUrl = '';
+        console.log(`[ACTIVATE TRIGGER] Vault ${vaultId} is fully overdue! Status: ${status}. Attempting activation...`);
         
-        if (trustees.length > 0) {
-          // 1. Share Google Doc
-          DriveApp.getFileById(docId).addEditors(trustees);
+        // --- [NEW] Start Retry Logic: Wrap all activation tasks in a try/catch
+        try {
+          const trustees = trusteesCSV.split(',').map(s => s.trim()).filter(Boolean);
+          let filesUrl = '';
           
-          // 2. Share Attachment Folder/File (if exists)
-          if (filesFolderId) {
-            try {
-              // Try to treat it as a Folder
-              const folder = DriveApp.getFolderById(filesFolderId);
-              folder.addEditors(trustees); // Share the entire folder
-              filesUrl = folder.getUrl();
-            } catch (e) {
+          if (trustees.length > 0) {
+            // --- Task 1: Share Google Doc ---
+            DriveApp.getFileById(docId).addEditors(trustees);
+            console.log(`[DRIVE] Shared Doc ${docId} with ${trustees.length} trustees.`);
+            
+            // --- Task 2: Share Attachment Folder/File (if exists) ---
+            if (filesFolderId) {
               try {
-                // If not a folder, try to treat it as a single File
-                const file = DriveApp.getFileById(filesFolderId);
-                file.addEditors(trustees); // Share the single file
-                filesUrl = file.getUrl();
+                const resource = DriveApp.getFileById(filesFolderId) || DriveApp.getFolderById(filesFolderId);
+                resource.addEditors(trustees);
+                filesUrl = resource.getUrl();
+                console.log(`[DRIVE] Shared resource ${filesFolderId} with ${trustees.length} trustees.`);
               } catch (e) {
-                console.log(`ERROR: Could not find or share Drive resource ${filesFolderId}: ${e.message}`);
-                filesUrl = 'Error: Resource not found/shared.';
+                console.log(`[DRIVE ERROR] Could not share resource ${filesFolderId}: ${e.message}`);
+                // Re-throw the error to be caught by the main activation try/catch block
+                throw new Error(`Failed to share Drive resource ${filesFolderId}: ${e.message}`);
               }
             }
-          }
-          
-          // 3. Send Email to Trustees
-          let body = `ระบบ Secret Keeper (ระบบจัดส่งเอกสารสั่งเสีย/สั่งลา) ได้เปิดเผยเอกสารตามเงื่อนไขที่ตั้งไว้โดยเจ้าของ (Vault ID: ${vaultId}).\n\n`;
-          body += `คุณสามารถเข้าดูที่ผู้สั่งเสียต้องการตาม **เอกสารข้อความหลัก** ได้ที่:\n${docUrl}\n\n`;
-          if (filesUrl && !filesUrl.startsWith('Error')) {
-            body += `**ไฟล์แนบทั้งหมด (PDF, VDO, รูปถ่าย, ฯลฯ)** อยู่ที่นี่:\n${filesUrl}\n\n`;
-          } else if (filesFolderId) {
-             // Fallback to URL in case sharing failed but ID is present
-             body += `**ไฟล์แนบทั้งหมด (PDF, VDO, รูปถ่าย, ฯลฯ)** อยู่ที่นี่ (อาจต้องขอสิทธิ์เข้าถึง):\nhttps://drive.google.com/open?id=${filesFolderId}\n\n`;
-          }
-          body += `กฎหมายพินัยกรรมไทยกำหนดให้พินัยกรรมต้องเป็นเอกสารลายมือหรือเอกสารตามกฏหมายเท่านั้น \nไม่ได้ยอมรับวิดีโอหรือไฟล์ดิจิทัลเป็นรูปแบบพินัยกรรมที่ถูกต้องตามกฎหมาย`;
-
-          const subject = `Secret Keeper (ระบบจัดส่งเอกสารสั่งเสีย/สั่งลา) - from ${ownerEmail || 'A'} is activated`;
-          
-          // *** UPDATED: Use SENDER_NAME from properties ***
-          trustees.forEach(t => {
-            try { 
-              GmailApp.sendEmail(t, subject, body, { name: SENDER_NAME });
-              console.log(`Email sent to Trustee: ${t} with sender name: ${SENDER_NAME}`);
-            } catch(e){ 
-              console.log('send mail err to ' + t + ': ' + e); 
+            
+            // --- Task 3: Send Email to Trustees ---
+            let body = `ระบบ Secret Keeper (ระบบจัดส่งเอกสารสั่งเสีย/สั่งลา) ได้เปิดเผยเอกสารตามเงื่อนไขที่ตั้งไว้โดยเจ้าของ (Vault ID: ${vaultId}).\n\n`;
+            body += `คุณสามารถเข้าดูที่ผู้สั่งเสียต้องการตาม **เอกสารข้อความหลัก** ได้ที่:\n${docUrl}\n\n`;
+            if (filesUrl) {
+              body += `**ไฟล์แนบทั้งหมด (PDF, VDO, รูปถ่าย, ฯฯ)** อยู่ที่นี่:\n${filesUrl}\n\n`;
+            } else if (filesFolderId) {
+               body += `**ไฟล์แนบทั้งหมด (PDF, VDO, รูปถ่าย, ฯฯ)** อยู่ที่นี่ (อาจต้องขอสิทธิ์เข้าถึง):\nhttps://drive.google.com/open?id=${filesFolderId}\n\n`;
             }
-          });
-        }
-        
-        // update status
-        sh.getRange(r+1, 11).setValue('ACTIVATED'); // Status is at Column 11
-        console.log(`STATUS: Vault ${vaultId} marked as ACTIVATED.`);
-        
-        // NEW: Notify owner (Email + LINE) once only (use activatedNotified flag/column)
-        try {
+            body += `กฎหมายพินัยกรรมไทยกำหนดให้พินัยกรรมต้องเป็นเอกสารลายมือหรือเอกสารตามกฏหมายเท่านั้น \nไม่ได้ยอมรับวิดีโอหรือไฟล์ดิจิทัลเป็นรูปแบบพินัยกรรมที่ถูกต้องตามกฎหมาย`;
+            const subject = `Secret Keeper (ระบบจัดส่งเอกสารสั่งเสีย/สั่งลา) - from ${ownerEmail || 'A'} is activated`;
+            
+            trustees.forEach(t => {
+              try { 
+                GmailApp.sendEmail(t, subject, body, { name: SENDER_NAME });
+                console.log(`Email sent to Trustee: ${t} with sender name: ${SENDER_NAME}`);
+              } catch(e){ 
+                console.log(`[TRUSTEE ERROR] Failed to send email to ${t}: ${e.message}`);
+                // Re-throw the error to stop the process and force a retry
+                throw new Error(`Failed to send email to trustee ${t}: ${e.message}`);
+              }
+            });
+          } else {
+             console.log(`[TRUSTEE WARNING] Vault ${vaultId} has no trustees defined. Proceeding to notify owner.`);
+          }
+          
+          // --- Task 4: Notify owner (Email + LINE) once only ---
+          // This check is outside the main "if (fullyOverdue...)" block in the provided code,
+          // but it SHOULD be inside the success block.
+          // Based on the user's *previous* code, this logic should be tied to activation.
+          // The provided code has this check *outside* the `if (fullyOverdue)` block.
+          // Let's assume the user's *intent* was to tie it to activation.
+          // Re-checking user code...
+          
+          // *** USER CODE ANALYSIS ***
+          // The user's code `if (fullyOverdue)` block *only* contains trustee logic and status update.
+          // The owner notification logic (`if (!activatedNotified)`) is *outside* this block.
+          // This seems like a bug.
+          
+          // *** CORRECTION ***
+          // The owner notification MUST be tied to the successful activation.
+          // I will move the owner notification block INSIDE this successful try block.
+          
+          console.log(`[NOTIFY OWNER ATTEMPT] Checking if owner ${ownerEmail} was notified...`);
           if (!activatedNotified) {
             // Compose owner notification content (Thai) as requested
             const ownerSubject = `ALERT: Vault ID ${vaultId} ถูกเปิดเผยแล้ว (Activated)`;
@@ -890,38 +925,47 @@ function scheduledCheck() {
             ownerBody += `3. หากทำได้ทันเวลา ผู้รับเอกสารดังกล่าวอาจจะยังไม่ได้เปิดอ่านข้อความของคุณ ความลับของคุณ "อาจจะ" ยังไม่ถูกอ่านแม้จะได้รับอีเมลแล้วก็ตาม\n\n---`;
 
             if (ownerEmail) {
-              try {
                 GmailApp.sendEmail(ownerEmail, ownerSubject, ownerBody, { name: SENDER_NAME });
                 console.log(`Owner notified by email for Vault ${vaultId} (sender: ${SENDER_NAME})`);
-              } catch (e) {
-                console.log(`Failed to send owner email for ${vaultId}: ${e}`);
-              }
             }
-
             if (ownerLineId) {
               const ownerAlertLineText = `🚨 ALERT: Vault ID ${vaultId} ถูกเปิดเผยแล้ว! เอกสารถูกแชร์ไปยังผู้ติดต่อที่ไว้ใจ\n\n❌ หากผิดพลาด: โปรดเข้า Drive และ **ยกเลิกการแชร์ทันที!** (ตรวจสอบ Email สำหรับคำแนะนำฉบับเต็ม)`;
-              try {
-                sendLinePush(ownerLineId, ownerAlertLineText);
-                console.log(`Owner notified by LINE for Vault ${vaultId}`);
-              } catch (e) {
-                console.log(`Failed to send owner LINE notification for ${vaultId}: ${e}`);
-              }
+              sendLinePush(ownerLineId, ownerAlertLineText);
+              console.log(`Owner notified by LINE for Vault ${vaultId}`);
             }
 
-            // Mark as notified to avoid duplicate notifications in future runs
+            // Mark as notified
             sh.getRange(r+1, 14).setValue(new Date().toISOString()); // Column 14 = activatedNotified
+            console.log(`[STATUS UPDATE] activatedNotified flag set for Vault ${vaultId}.`);
           }
-        } catch (notifyErr) {
-          console.log(`Error notifying owner for ${vaultId}: ${notifyErr}`);
+
+          // --- Task 5: Set final status ---
+          sh.getRange(r+1, 11).setValue('ACTIVATED'); // Status is at Column 11
+          console.log(`[STATUS UPDATE] Vault ${vaultId} final status set to ACTIVATED.`);
+
+        } catch (activationError) {
+          // *** [NEW] CATCH BLOCK FOR RETRY LOGIC ***
+          // If any Drive or Gmail task failed, this block is triggered.
+          // We DO NOT set the status to ACTIVATED.
+          // The Vault status remains 'REMINDER' or 'ACTIVATION_PENDING'.
+          // The system will retry on the next trigger.
+          console.log(`[ACTIVATION FAILED - WILL RETRY] Vault ${vaultId}. Error: ${activationError.message}. Status remains ${status}.`);
         }
         
-      } else if (overdue) {
+      } else if (overdue && status === 'ACTIVE') {
         // --- SEND REMINDER (DEADLINE PASSED, STILL IN GRACE) ---
+        
+        // Check if reminder was sent recently (e.g., within 24 hours)
         const millisSinceLastReminder = now.getTime() - lastReminderTime.getTime();
         const reminderInterval = 24 * 60 * 60 * 1000; // 24 hours
         
+        console.log(`[REMINDER CHECK] Vault ${vaultId}. Overdue: ${overdue}, Status: ${status}. Millis since last reminder: ${millisSinceLastReminder}`);
+        
         if (millisSinceLastReminder > reminderInterval) {
+          console.log(`[REMINDER TRIGGER] Vault ${vaultId} is overdue. Sending reminders.`);
           
+          const ssUrl = sh.getParent().getUrl(); 
+
           // 1. Primary Reminder: LINE Flex Message
           if (ownerLineId) {
             const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
@@ -936,16 +980,20 @@ function scheduledCheck() {
             
             let emailBody = `ระบบ Secret Keeper (จัดส่งเอกสารสั่งเสีย/สั่งลา) ไม่พบการเช็กอินของคุณสำหรับ Vault ID: ${vaultId} เป็นเวลา ${checkinDays} วัน\n\n`;
             emailBody += `⚠️ นี่คือการแจ้งเตือนฉุกเฉิน กรุณากดลิงก์ด้านล่างเพื่อยืนยันตัวตนของคุณภายใน **${graceHours} ชั่วโมง** ก่อนที่เอกสารความลับจะถูกเปิดเผยก่อนเวลาอันควร:\n\n`;
-            emailBody += `ลิงก์ยืนยันตัวตน (Proof-of-Life) คลิก:\n${checkinUrl}\n\n`;
+            emailBody += `🔗 ลิงก์ยืนยันตัวตน (Proof-of-Life) คลิก:\n${checkinUrl}\n\n`;
             emailBody += `(ลิงก์นี้ใช้ได้แม้ว่า LINE OA จะมีปัญหา หรือคุณไม่สะดวกเข้า LINE)\n\n---`;
 
             const subject = `SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`;
-            // *** UPDATED: Use SENDER_NAME from properties ***
             GmailApp.sendEmail(ownerEmail, subject, emailBody, { name: SENDER_NAME });
             console.log(`Email Check-in Fallback sent for ${vaultId} with sender name: ${SENDER_NAME}`);
           }
 
+          // Update status to REMINDER
+          sh.getRange(r+1, 11).setValue('REMINDER'); // Status (Col 11)
           sh.getRange(r+1, 13).setValue(new Date().toISOString()); // set lastReminderISO (Col 13)
+          console.log(`[STATUS UPDATE] Vault ${vaultId} status set to REMINDER.`);
+        } else {
+           console.log(`[REMINDER SKIP] Vault ${vaultId}. Last reminder sent recently (${lastReminderTime.toISOString()}).`);
         }
       } else {
         console.log(`Vault ${vaultId} is not overdue. No action taken.`);
