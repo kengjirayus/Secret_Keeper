@@ -208,6 +208,10 @@ function deactivateVault(vaultId, ownerLineId) {
     // Index 2: ownerLineId, Index 10: status
     if (row[0] === vaultId && row[2] === ownerLineId && (row[10] === 'ACTIVE' || row[10] === 'REMINDER')) {
       sh.getRange(r + 1, 11).setValue('DEACTIVATED'); // update status (Col 11)
+      
+      // *** BUG FIX: Force the Sheet to update immediately ***
+      SpreadsheetApp.flush(); 
+      
       Logger.log(`Vault ${vaultId} manually DEACTIVATED by ${ownerLineId}`);
       return true;
     }
@@ -283,6 +287,8 @@ function checkinByLineId(lineId) {
   }
   
   if (updatedCount > 0) {
+    // *** BUG FIX: Force the Sheet to update immediately before returning success ***
+    SpreadsheetApp.flush(); 
     return { ok: true, message: `เช็กอินสำเร็จ! Vault ทั้ง ${updatedCount} รายการของคุณถูกต่ออายุแล้ว` };
   } else {
     return { ok: false, message: 'ไม่พบ Vault ที่อยู่ในสถานะ ACTIVE หรือ REMINDER ให้เช็กอิน' };
@@ -326,6 +332,9 @@ function checkinVault(ownerLineId, vaultId, ownerEmail) {
         sh.getRange(r+1, 13).setValue(''); // Clear lastReminderISO (Col 13)
         sh.getRange(r+1, 14).setValue(''); // Clear activatedNotified (Col 14)
         
+        // *** BUG FIX: Force the Sheet to update immediately ***
+        SpreadsheetApp.flush(); 
+
         console.log(`[CHECKIN SUCCESS] Vault ${vaultId} successfully checked in. Status reset to ACTIVE.`);
         return { ok: true, message: `Vault ${vaultId} ได้รับการยืนยันแล้ว!` };
       } else if (status === 'ACTIVATED') {
@@ -889,22 +898,6 @@ function scheduledCheck() {
           }
           
           // --- Task 4: Notify owner (Email + LINE) once only ---
-          // This check is outside the main "if (fullyOverdue...)" block in the provided code,
-          // but it SHOULD be inside the success block.
-          // Based on the user's *previous* code, this logic should be tied to activation.
-          // The provided code has this check *outside* the `if (fullyOverdue)` block.
-          // Let's assume the user's *intent* was to tie it to activation.
-          // Re-checking user code...
-          
-          // *** USER CODE ANALYSIS ***
-          // The user's code `if (fullyOverdue)` block *only* contains trustee logic and status update.
-          // The owner notification logic (`if (!activatedNotified)`) is *outside* this block.
-          // This seems like a bug.
-          
-          // *** CORRECTION ***
-          // The owner notification MUST be tied to the successful activation.
-          // I will move the owner notification block INSIDE this successful try block.
-          
           console.log(`[NOTIFY OWNER ATTEMPT] Checking if owner ${ownerEmail} was notified...`);
           if (!activatedNotified) {
             // Compose owner notification content (Thai) as requested
@@ -937,6 +930,8 @@ function scheduledCheck() {
             // Mark as notified
             sh.getRange(r+1, 14).setValue(new Date().toISOString()); // Column 14 = activatedNotified
             console.log(`[STATUS UPDATE] activatedNotified flag set for Vault ${vaultId}.`);
+          } else {
+            console.log(`[NOTIFY SKIP] Owner ${ownerEmail} was already notified about ACTIVATED status.`);
           }
 
           // --- Task 5: Set final status ---
@@ -947,7 +942,7 @@ function scheduledCheck() {
           // *** [NEW] CATCH BLOCK FOR RETRY LOGIC ***
           // If any Drive or Gmail task failed, this block is triggered.
           // We DO NOT set the status to ACTIVATED.
-          // The Vault status remains 'REMINDER' or 'ACTIVATION_PENDING'.
+          // The Vault status remains 'REMINDER' or 'ACTIVATION_PENDING' (if using ACTIVE/grace=0)
           // The system will retry on the next trigger.
           console.log(`[ACTIVATION FAILED - WILL RETRY] Vault ${vaultId}. Error: ${activationError.message}. Status remains ${status}.`);
         }
