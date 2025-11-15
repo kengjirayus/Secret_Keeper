@@ -601,7 +601,23 @@ function createDefaultFlex(webAppUrl) {
   };
 }
 
-function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
+/**
+ * [FUNCTION MODIFIED]
+ * Creates a Flex Message for check-in reminder.
+ * Now supports showing a count if multiple vaults are overdue.
+ * @param {number} checkinDays - Check-in interval (used for display).
+ * @param {number} graceHours - Grace period (used for display).
+ * @param {string} sheetUrl - URL to the vault index sheet.
+ * @param {number} [vaultCount=1] - The number of vaults that are overdue.
+ * @returns {Object} Line Flex Message object.
+ */
+function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl, vaultCount = 1) {
+  
+  // [NEW] Change text based on vault count
+  const titleText = vaultCount > 1 
+    ? `พบ Vault ${vaultCount} รายการ ที่ไม่พบการเช็กอิน`
+    : `ไม่พบการเช็กอินของคุณ\nมานาน ${checkinDays} วัน`;
+  
   return {
     type: "flex",
     altText: "Secret Keeper: Reminder Check-in",
@@ -629,7 +645,7 @@ function createCheckinReminderFlex(checkinDays, graceHours, sheetUrl) {
         contents: [
           {
             type: "text",
-            text: `ไม่พบการเช็กอินของคุณ\nมานาน ${checkinDays} วัน`,
+            text: titleText, // [MODIFIED] Use the new dynamic text
             wrap: true,
             margin: "md",
             align: "center",
@@ -783,6 +799,13 @@ function sendLinePush(toLineUserId, payloadContent) {
 
 
 /* ---------- Scheduler: daily check ---------- */
+/**
+ * [FUNCTION MODIFIED]
+ * Scheduled check function.
+ * - Activates fully overdue vaults (one by one, unchanged logic).
+ * - [NEW] Collects all vaults needing reminders, groups them by user, 
+ * and sends ONE notification (LINE/Email) per user.
+ */
 function scheduledCheck() {
   console.log('scheduledCheck started');
   const sh = getSheet();
@@ -793,12 +816,18 @@ function scheduledCheck() {
   
   const SENDER_NAME = props.getProperty('EMAIL_SENDER_NAME') || 'Secret Keeper Default Sender'; 
 
+  // [NEW] Collector object to group overdue vaults by user
+  const usersToRemind = {};
+
   console.log(`Found ${data.length - 1} vaults to check.`);
 
   // Index mapping (0-based in data array):
   // 0:vaultId, 1:ownerEmail, 2:ownerLineId, 3:docId, 4:docUrl, 5:filesFolderId, 
   // 6:trustees, 7:checkinDays, 8:graceHours, 9:lastCheckinISO, 10:status, 11:createdAt, 12:lastReminderISO, 13:activatedNotified
 
+  // --- [STEP 1: Main loop to process vaults] ---
+  // This loop now handles ACTIVATION logic directly
+  // and COLLECTS vaults that need reminders.
   for (let r = 1; r < data.length; r++) {
     try {
       const row = data[r];
@@ -816,10 +845,10 @@ function scheduledCheck() {
       const lastReminderISO = row[12];
       const activatedNotified = row[13]; // may be undefined for older rows
       
-      console.log(`Processing vault ${vaultId} with status: ${status}`);
+      // console.log(`Processing vault ${vaultId} with status: ${status}`);
       
       if (status !== 'ACTIVE' && status !== 'REMINDER') {
-        console.log(`Vault ${vaultId} status is ${status}. Skipping check.`);
+        // console.log(`Vault ${vaultId} status is ${status}. Skipping check.`);
         continue;
       }
 
@@ -835,15 +864,12 @@ function scheduledCheck() {
       const overdue = now >= checkinDeadlineTime;
       const fullyOverdue = now >= activationTime;
       
-      console.log(`Vault ${vaultId}: lastCheckin=${lastCheckinISO}, overdue=${overdue}, fullyOverdue=${fullyOverdue}`);
-
-      const ssUrl = sh.getParent().getUrl(); 
+      // console.log(`Vault ${vaultId}: lastCheckin=${lastCheckinISO}, overdue=${overdue}, fullyOverdue=${fullyOverdue}`);
 
       // **********************************************
       // 1. ACTIVATION LOGIC (overdue + grace period passed)
+      // (Logic remains unchanged, processed individually)
       // **********************************************
-      // If activation time is reached AND status is REMINDER (meaning owner was warned)
-      // OR if status is ACTIVE and graceHours is 0 (meaning immediate activation)
       if (fullyOverdue && (status === 'REMINDER' || (status === 'ACTIVE' && graceHours === 0))) {
         
         console.log(`[ACTIVATE TRIGGER] Vault ${vaultId} is fully overdue! Status: ${status}. Attempting activation...`);
@@ -940,66 +966,127 @@ function scheduledCheck() {
 
         } catch (activationError) {
           // *** [NEW] CATCH BLOCK FOR RETRY LOGIC ***
-          // If any Drive or Gmail task failed, this block is triggered.
-          // We DO NOT set the status to ACTIVATED.
-          // The Vault status remains 'REMINDER' or 'ACTIVATION_PENDING' (if using ACTIVE/grace=0)
-          // The system will retry on the next trigger.
           console.log(`[ACTIVATION FAILED - WILL RETRY] Vault ${vaultId}. Error: ${activationError.message}. Status remains ${status}.`);
         }
         
-      } else if (overdue && status === 'ACTIVE') {
-        // --- SEND REMINDER (DEADLINE PASSED, STILL IN GRACE) ---
+      } 
+      // **********************************************
+      // 2. [MODIFIED] REMINDER LOGIC (Collects for batch processing)
+      // **********************************************
+      else if (overdue && status === 'ACTIVE') {
         
-        // Check if reminder was sent recently (e.g., within 24 hours)
         const millisSinceLastReminder = now.getTime() - lastReminderTime.getTime();
-        const reminderInterval = 24 * 60 * 60 * 1000; // 24 hours
+        const reminderInterval = 24 * 60 * 60 * 1000; // 24 hours (or your desired interval)
         
         console.log(`[REMINDER CHECK] Vault ${vaultId}. Overdue: ${overdue}, Status: ${status}. Millis since last reminder: ${millisSinceLastReminder}`);
         
         if (millisSinceLastReminder > reminderInterval) {
-          console.log(`[REMINDER TRIGGER] Vault ${vaultId} is overdue. Sending reminders.`);
+          console.log(`[REMINDER COLLECT] Vault ${vaultId} is overdue. Collecting for user ${ownerLineId || ownerEmail}.`);
           
-          const ssUrl = sh.getParent().getUrl(); 
-
-          // 1. Primary Reminder: LINE Flex Message
-          if (ownerLineId) {
-            const flexMsg = createCheckinReminderFlex(checkinDays, graceHours, ssUrl); 
-            sendLinePush(ownerLineId, flexMsg); // send Flex Message object
-            console.log(`LINE Flex Reminder sent for ${vaultId}`);
-          }
+          // Use ownerLineId as the primary key, fallback to email if LINE ID is missing
+          const ownerId = ownerLineId || ownerEmail; 
           
-          // 2. Fallback/Secondary Reminder: Email with Web Check-in Link
-          if (ownerEmail) {
-            // Construct the secure, vault-specific check-in URL
-            const checkinUrl = `${webAppUrl}?action=checkin&vaultId=${vaultId}&email=${encodeURIComponent(ownerEmail)}`;
-            
-            let emailBody = `ระบบ Secret Keeper (จัดส่งเอกสารสั่งเสีย/สั่งลา) ไม่พบการเช็กอินของคุณสำหรับ Vault ID: ${vaultId} เป็นเวลา ${checkinDays} วัน\n\n`;
-            emailBody += `⚠️ นี่คือการแจ้งเตือนฉุกเฉิน กรุณากดลิงก์ด้านล่างเพื่อยืนยันตัวตนของคุณภายใน **${graceHours} ชั่วโมง** ก่อนที่เอกสารความลับจะถูกเปิดเผยก่อนเวลาอันควร:\n\n`;
-            emailBody += `🔗 ลิงก์ยืนยันตัวตน (Proof-of-Life) คลิก:\n${checkinUrl}\n\n`;
-            emailBody += `(ลิงก์นี้ใช้ได้แม้ว่า LINE OA จะมีปัญหา หรือคุณไม่สะดวกเข้า LINE)\n\n---`;
-
-            const subject = `SECRET KEEPER: Emergency Check-in Reminder for Vault ${vaultId}`;
-            GmailApp.sendEmail(ownerEmail, subject, emailBody, { name: SENDER_NAME });
-            console.log(`Email Check-in Fallback sent for ${vaultId} with sender name: ${SENDER_NAME}`);
+          if (!ownerId) {
+             console.log(`[REMINDER SKIP] Vault ${vaultId} has no ownerLineId or ownerEmail. Cannot send reminder.`);
+             continue;
           }
 
-          // Update status to REMINDER
-          sh.getRange(r+1, 11).setValue('REMINDER'); // Status (Col 11)
-          sh.getRange(r+1, 13).setValue(new Date().toISOString()); // set lastReminderISO (Col 13)
-          console.log(`[STATUS UPDATE] Vault ${vaultId} status set to REMINDER.`);
+          // Initialize user object in the collector if it's the first time
+          if (!usersToRemind[ownerId]) {
+            usersToRemind[ownerId] = {
+              ownerLineId: ownerLineId,
+              ownerEmail: ownerEmail,
+              overdueVaults: [], // Array to hold details of all overdue vaults
+              docUrl: sh.getParent().getUrl() // Store sheet URL once
+            };
+          }
+          
+          // Add this vault's info to the user's list
+          usersToRemind[ownerId].overdueVaults.push({
+            vaultId: vaultId,
+            checkinDays: checkinDays,
+            graceHours: graceHours,
+            sheetRow: r + 1 // Store the 1-based sheet row index for later update
+          });
+
         } else {
            console.log(`[REMINDER SKIP] Vault ${vaultId}. Last reminder sent recently (${lastReminderTime.toISOString()}).`);
         }
       } else {
-        console.log(`Vault ${vaultId} is not overdue. No action taken.`);
+        // console.log(`Vault ${vaultId} is not overdue. No action taken.`);
       }
       
     } catch(err) {
       console.log('scheduledCheck row err on row ' + (r+1) + ': ' + err.message);
     }
-  }
+  } // --- [END OF STEP 1: Main loop] ---
+
+
+  // *************************************************************
+  // [NEW] STEP 2: PROCESS BATCHED REMINDERS (AFTER LOOP)
+  // *************************************************************
+  console.log(`[BATCH REMINDERS] Processing reminders for ${Object.keys(usersToRemind).length} users.`);
+            
+  for (const ownerId in usersToRemind) {
+    try {
+      const userData = usersToRemind[ownerId];
+      const { ownerLineId, ownerEmail, overdueVaults, docUrl } = userData;
+      const vaultCount = overdueVaults.length;
+
+      if (vaultCount === 0) continue; // Should not happen, but good to check
+
+      // We need *at least one* vault's info for the message (e.g., graceHours)
+      const firstVault = overdueVaults[0]; 
+
+      // 1. Primary Reminder: LINE Flex Message (One message for all)
+      // The "Check In" button in this Flex triggers `checkinByLineId`,
+      // which correctly checks in ALL vaults for that user.
+      if (ownerLineId) {
+        const flexMsg = createCheckinReminderFlex(
+          firstVault.checkinDays, // Just use the first vault's info for display
+          firstVault.graceHours,
+          docUrl,
+          vaultCount // [NEW] Pass the count
+        );
+        sendLinePush(ownerLineId, flexMsg); // send Flex Message object
+        console.log(`LINE Flex Reminder sent to ${ownerLineId} for ${vaultCount} vaults.`);
+      }
+      
+      // 2. Fallback/Secondary Reminder: Email (One email, multiple links)
+      // This fulfills user requirement "แบบที่ 2"
+      if (ownerEmail) {
+        let emailBody = `ระบบ Secret Keeper (จัดส่งเอกสารสั่งเสีย/สั่งลา) ไม่พบการเช็กอินของคุณสำหรับ Vault ${vaultCount} รายการ\n\n`;
+        emailBody += `⚠️ นี่คือการแจ้งเตือนฉุกเฉิน กรุณากดลิงก์ด้านล่างเพื่อยืนยันตัวตนของคุณภายใน **${firstVault.graceHours} ชั่วโมง** ก่อนที่เอกสารความลับจะถูกเปิดเผยก่อนเวลาอันควร:\n\n`;
+        
+        // [NEW] Add a link for EACH overdue vault
+        overdueVaults.forEach((vault, index) => {
+          const checkinUrl = `${webAppUrl}?action=checkin&vaultId=${vault.vaultId}&email=${encodeURIComponent(ownerEmail)}`;
+          emailBody += `ลิงก์ยืนยันตัวตน (Vault ${index + 1}: ${vault.vaultId}):\n${checkinUrl}\n\n`;
+        });
+
+        emailBody += `(การคลิกลิงก์ใดลิงก์หนึ่ง จะเป็นการยืนยันตัวตนสำหรับ Vault นั้นๆ เท่านั้น)\n\n---`;
+
+        const subject = `SECRET KEEPER: Emergency Check-in Reminder (${vaultCount} Vaults)`;
+        GmailApp.sendEmail(ownerEmail, subject, emailBody, { name: SENDER_NAME });
+        console.log(`Email Check-in Fallback sent to ${ownerEmail} for ${vaultCount} vaults with sender name: ${SENDER_NAME}`);
+      }
+
+      // 3. Update status for ALL processed vaults
+      const nowISO = new Date().toISOString();
+      overdueVaults.forEach(vault => {
+        sh.getRange(vault.sheetRow, 11).setValue('REMINDER'); // Status (Col 11)
+        sh.getRange(vault.sheetRow, 13).setValue(nowISO); // set lastReminderISO (Col 13)
+      });
+      console.log(`[STATUS UPDATE] ${vaultCount} vaults for user ${ownerId} set to REMINDER.`);
+
+    } catch (err) {
+      console.log(`[BATCH REMINDER ERROR] Failed to process user ${ownerId}: ${err.message}`);
+    }
+  } // --- [END OF STEP 2: Batch reminder loop] ---
+
   console.log('scheduledCheck finished');
 }
+
 
 /* ---------- Admin utility: list vaults (for debugging) ---------- */
 function listVaults() {
